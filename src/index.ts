@@ -23,6 +23,7 @@ import { registerGenericCommand } from "./commands/generic.js";
 import { registerInfoCommand } from "./commands/info.js";
 import { registerDomainCommand } from "./commands/domain.js";
 import { registerAccountCommand } from "./commands/account.js";
+import { registerAdminCommand } from "./commands/admin.js";
 
 const program = new Command();
 
@@ -202,6 +203,7 @@ registerGenericCommand(program, fail);
 registerInfoCommand(program, fail);
 registerDomainCommand(program, fail);
 registerAccountCommand(program, fail);
+registerAdminCommand(program, fail);
 
 // ---- mcp ----
 program
