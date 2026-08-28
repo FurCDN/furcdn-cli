@@ -21,6 +21,7 @@ import { runMcpServer } from "./mcp.js";
 import { login, logout, whoami } from "./commands/auth.js";
 import { registerGenericCommand } from "./commands/generic.js";
 import { registerInfoCommand } from "./commands/info.js";
+import { registerDomainCommand } from "./commands/domain.js";
 
 const program = new Command();
 
@@ -198,6 +199,7 @@ program
 
 registerGenericCommand(program, fail);
 registerInfoCommand(program, fail);
+registerDomainCommand(program, fail);
 
 // ---- mcp ----
 program
