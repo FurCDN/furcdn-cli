@@ -17,7 +17,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --experimental-vm-modules --test dist/**/*.test.js",
+    "test": "node --experimental-vm-modules --test $(find dist -name '*.test.js')",
     "pretest": "npm run build",
     "dev": "tsc -p tsconfig.json --watch"
   },
