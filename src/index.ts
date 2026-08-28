@@ -18,6 +18,8 @@ import {
 } from "./api.js";
 import { renderTable } from "./format.js";
 import { runMcpServer } from "./mcp.js";
+import { login, logout, whoami } from "./commands/auth.js";
+import { registerGenericCommand } from "./commands/generic.js";
 
 const program = new Command();
 
@@ -147,6 +149,53 @@ program
       fail(e);
     }
   });
+
+// ---- auth（session 鑑權基礎：login / logout / whoami）----
+program
+  .command("login")
+  .description("登入 FurCDN 帳號（session 鑑權，供 domain / account / admin 指令使用）")
+  .option("-u, --username <username>", "帳號或 Email（省略則互動輸入）")
+  .option("-p, --password <password>", "密碼（省略則互動輸入，不會顯示在 shell 歷史記錄較安全）")
+  .option(
+    "--cf-token <token>",
+    "Cloudflare Turnstile token（正式站啟用人機驗證時必填，且只能透過瀏覽器取得——已知限制，見 README）",
+  )
+  .action(async (opts: { username?: string; password?: string; cfToken?: string }) => {
+    try {
+      const user = await login(opts);
+      console.log(`已登入：${user.username}（角色：${user.role}）`);
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+program
+  .command("logout")
+  .description("登出並清除本機 session")
+  .action(async () => {
+    await logout();
+    console.log("已登出。");
+  });
+
+program
+  .command("whoami")
+  .description("顯示目前登入的帳號")
+  .option("--json", "輸出 JSON")
+  .action(async (opts: { json?: boolean }) => {
+    try {
+      const me = await whoami();
+      if (opts.json) {
+        console.log(JSON.stringify(me, null, 2));
+        return;
+      }
+      console.log(`帳號：${me.username}（${me.email}）`);
+      console.log(`角色：${me.role}`);
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+registerGenericCommand(program, fail);
 
 // ---- mcp ----
 program
