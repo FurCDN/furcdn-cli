@@ -20,6 +20,7 @@ import { renderTable } from "./format.js";
 import { runMcpServer } from "./mcp.js";
 import { login, logout, whoami } from "./commands/auth.js";
 import { registerGenericCommand } from "./commands/generic.js";
+import { registerInfoCommand } from "./commands/info.js";
 
 const program = new Command();
 
@@ -196,6 +197,7 @@ program
   });
 
 registerGenericCommand(program, fail);
+registerInfoCommand(program, fail);
 
 // ---- mcp ----
 program

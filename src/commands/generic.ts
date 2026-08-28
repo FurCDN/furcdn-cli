@@ -10,8 +10,12 @@ function inferAuthMode(pathname: string): AuthMode {
   if (pathname.startsWith("/api/admin/")) return "session";
   if (pathname.startsWith("/api/user/")) return "session";
   if (pathname.startsWith("/api/domains")) return "session";
-  if (pathname === "/api/auth/me") return "session";
+  if (pathname.startsWith("/api/auth/")) return "session";
   if (pathname.startsWith("/api/stats/")) return "session";
+  if (pathname === "/api/clusters") return "session";
+  if (pathname === "/api/threat-ips") return "session";
+  if (pathname === "/api/docs") return "session";
+  // /api/plans/public、/api/public/*、/api/health 等真正公開端點
   return "none";
 }
 
