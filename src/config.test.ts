@@ -20,7 +20,7 @@ test("setApiKey / resolveApiKey round-trips through disk", () => {
 });
 
 test("resolveApiBase falls back to default when unset", () => {
-  assert.equal(resolveApiBase(), "https://www.furcdn.us");
+  assert.equal(resolveApiBase(), "https://cdn.taipei");
 });
 
 test("setApiBase strips trailing slashes", () => {

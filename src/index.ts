@@ -54,7 +54,7 @@ config
 
 config
   .command("set-base-url <url>")
-  .description("設定 API base URL（預設 https://www.furcdn.us）")
+  .description("設定 API base URL（預設 https://cdn.taipei）")
   .action((url: string) => {
     setApiBase(url);
     console.log(`已將 API base URL 設為 ${resolveApiBase()}`);

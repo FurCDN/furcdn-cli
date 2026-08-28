@@ -36,7 +36,7 @@ npm link   # 全域安裝 `furcdn` 指令；不想全域安裝可用 node dist/i
 
    ```bash
    $ furcdn config show
-   API base : https://www.furcdn.us
+   API base : https://cdn.taipei
    API key  : fck_xxxx…（已設定）
    設定檔   : /home/you/.config/furcdn/config.json
    ```
@@ -50,9 +50,9 @@ npm link   # 全域安裝 `furcdn` 指令；不想全域安裝可用 node dist/i
 ```bash
 $ furcdn login
 請在瀏覽器開啟以下網址完成授權：
-  https://www.furcdn.us/oauth/device?user_code=ABCD-1234
+  https://cdn.taipei/oauth/device?user_code=ABCD-1234
 
-或前往 https://www.furcdn.us/oauth/device 手動輸入代碼：ABCD-1234
+或前往 https://cdn.taipei/oauth/device 手動輸入代碼：ABCD-1234
 
 等待授權中...
 ...
@@ -248,7 +248,7 @@ cp -r /path/to/furcdn-cli/skills/furcdn .claude/skills/furcdn
    不管操作者的帳號角色是不是 admin。就算 CLI 這端出於某種 bug 送出了 admin 請求，
    伺服器也會擋下來——CLI 這邊的 `furcdn api /api/admin/...` 提前擋掉只是給更清楚
    的錯誤訊息，不是唯一的防線。
-3. 需要管理後台功能時，請直接用瀏覽器登入 `https://www.furcdn.us` 的 dashboard。
+3. 需要管理後台功能時，請直接用瀏覽器登入 `https://cdn.taipei` 的 dashboard。
 
 ## 目前涵蓋範圍
 

@@ -7,7 +7,7 @@ export interface CliConfig {
   apiBase?: string;
 }
 
-const DEFAULT_API_BASE = "https://www.furcdn.us";
+const DEFAULT_API_BASE = "https://cdn.taipei";
 
 function configDir(): string {
   return path.join(os.homedir(), ".config", "furcdn");

@@ -33,9 +33,9 @@ test("login polls the device token endpoint (authorization_pending -> approved) 
         json: {
           device_code: "dc123",
           user_code: "ABCD-1234",
-          verification_uri: "https://www.furcdn.us/oauth/device",
+          verification_uri: "https://cdn.taipei/oauth/device",
           verification_uri_complete:
-            "https://www.furcdn.us/oauth/device?user_code=ABCD-1234",
+            "https://cdn.taipei/oauth/device?user_code=ABCD-1234",
           expires_in: 600,
           interval: 0, // 測試用：把輪詢間隔壓到 0，避免拖慢測試
         },
@@ -73,8 +73,8 @@ test("login throws a clear error when the device code expires", async () => {
         json: {
           device_code: "dc456",
           user_code: "WXYZ-5678",
-          verification_uri: "https://www.furcdn.us/oauth/device",
-          verification_uri_complete: "https://www.furcdn.us/oauth/device?user_code=WXYZ-5678",
+          verification_uri: "https://cdn.taipei/oauth/device",
+          verification_uri_complete: "https://cdn.taipei/oauth/device?user_code=WXYZ-5678",
           expires_in: 600,
           interval: 0,
         },
