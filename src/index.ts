@@ -23,7 +23,6 @@ import { registerGenericCommand } from "./commands/generic.js";
 import { registerInfoCommand } from "./commands/info.js";
 import { registerDomainCommand } from "./commands/domain.js";
 import { registerAccountCommand } from "./commands/account.js";
-import { registerAdminCommand } from "./commands/admin.js";
 
 const program = new Command();
 
@@ -154,20 +153,18 @@ program
     }
   });
 
-// ---- auth（session 鑑權基礎：login / logout / whoami）----
+// ---- auth（OAuth device flow：login / logout / whoami）----
 program
   .command("login")
-  .description("登入 FurCDN 帳號（session 鑑權，供 domain / account / admin 指令使用）")
-  .option("-u, --username <username>", "帳號或 Email（省略則互動輸入）")
-  .option("-p, --password <password>", "密碼（省略則互動輸入，不會顯示在 shell 歷史記錄較安全）")
-  .option(
-    "--cf-token <token>",
-    "Cloudflare Turnstile token（正式站啟用人機驗證時必填，且只能透過瀏覽器取得——已知限制，見 README）",
+  .description(
+    "登入 FurCDN 帳號（OAuth device flow：在瀏覽器完成，CLI 不會要求輸入密碼，供 domain / account 指令使用）",
   )
-  .action(async (opts: { username?: string; password?: string; cfToken?: string }) => {
+  .option("--no-browser", "不要自動開啟瀏覽器，只印出授權網址")
+  .action(async (opts: { browser: boolean }) => {
     try {
-      const user = await login(opts);
-      console.log(`已登入：${user.username}（角色：${user.role}）`);
+      await login({ noBrowser: !opts.browser });
+      const me = await whoami();
+      console.log(`\n已登入：${me.username}（${me.email}）`);
     } catch (e) {
       fail(e);
     }
@@ -203,7 +200,6 @@ registerGenericCommand(program, fail);
 registerInfoCommand(program, fail);
 registerDomainCommand(program, fail);
 registerAccountCommand(program, fail);
-registerAdminCommand(program, fail);
 
 // ---- mcp ----
 program

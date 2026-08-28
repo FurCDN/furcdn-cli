@@ -7,7 +7,6 @@ import { apiFetch, ApiError, type AuthMode } from "../http.js";
 // route，不可能每支都手刻 CLI 子指令，這支保底涵蓋全部。
 function inferAuthMode(pathname: string): AuthMode {
   if (pathname.startsWith("/api/v1/")) return "key";
-  if (pathname.startsWith("/api/admin/")) return "session";
   if (pathname.startsWith("/api/user/")) return "session";
   if (pathname.startsWith("/api/domains")) return "session";
   if (pathname.startsWith("/api/auth/")) return "session";
@@ -38,6 +37,16 @@ export function registerGenericCommand(program: Command, fail: (e: unknown) => n
       ) => {
         try {
           const pathname = pathArg.startsWith("/") ? pathArg : `/${pathArg}`;
+          // furcdn-cli 刻意不提供任何管理後台（admin）操作，即使呼叫者的帳號是
+          // admin 也一樣——這是設計決策，不是還沒做完。伺服器端也會拒絕（device
+          // flow 核發的 token 帶 src="cli" 標記，requireAdmin() 一律擋下），這裡
+          // 提前擋掉只是給使用者更清楚的錯誤訊息，不用等一趟網路來回才知道。
+          if (pathname.startsWith("/api/admin/")) {
+            throw new ApiError(
+              0,
+              "furcdn-cli 不提供任何管理後台（admin）操作。請透過瀏覽器登入 dashboard 使用管理功能。",
+            );
+          }
           let body: unknown;
           if (opts.data) {
             const raw = opts.data.startsWith("@")
