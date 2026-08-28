@@ -1,0 +1,38 @@
+{
+  "name": "@furcdn/cli",
+  "version": "0.1.0",
+  "description": "FurCDN 官方命令列工具",
+  "license": "MIT",
+  "author": "LangYa466",
+  "type": "module",
+  "bin": {
+    "furcdn": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-vm-modules --test dist/**/*.test.js",
+    "pretest": "npm run build",
+    "dev": "tsc -p tsconfig.json --watch"
+  },
+  "dependencies": {
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FurCDN/furcdn-cli.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
