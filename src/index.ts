@@ -22,6 +22,7 @@ import { login, logout, whoami } from "./commands/auth.js";
 import { registerGenericCommand } from "./commands/generic.js";
 import { registerInfoCommand } from "./commands/info.js";
 import { registerDomainCommand } from "./commands/domain.js";
+import { registerAccountCommand } from "./commands/account.js";
 
 const program = new Command();
 
@@ -200,6 +201,7 @@ program
 registerGenericCommand(program, fail);
 registerInfoCommand(program, fail);
 registerDomainCommand(program, fail);
+registerAccountCommand(program, fail);
 
 // ---- mcp ----
 program
