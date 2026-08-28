@@ -17,6 +17,7 @@ import {
   health,
 } from "./api.js";
 import { renderTable } from "./format.js";
+import { runMcpServer } from "./mcp.js";
 
 const program = new Command();
 
@@ -145,6 +146,14 @@ program
     } catch (e) {
       fail(e);
     }
+  });
+
+// ---- mcp ----
+program
+  .command("mcp")
+  .description("以 stdio 啟動 MCP server，把上述操作暴露成 MCP tools")
+  .action(async () => {
+    await runMcpServer();
   });
 
 program.parseAsync(process.argv);

@@ -84,6 +84,61 @@ OK: ok
 FURCDN_API_KEY=fck_xxx FURCDN_API_BASE=https://staging.example.com furcdn domains list
 ```
 
+## 作為 MCP Server 使用
+
+`furcdn mcp` 會以 stdio 啟動一個 [MCP](https://modelcontextprotocol.io) server，
+把上面四個操作包成 MCP tools。鑑權沿用本機既有設定（`furcdn config set-key`
+或 `FURCDN_API_KEY` 環境變數）——MCP tool 的參數裡**不需要**、也不應該傳 API key。
+
+先確保已經 `npm run build`（或已 `npm link`），再把它加進你的 MCP client 設定：
+
+**Claude Code：**
+
+```bash
+claude mcp add furcdn -- furcdn mcp
+# 或還沒 npm link 過，直接指到編譯產物：
+claude mcp add furcdn -- node /path/to/furcdn-cli/dist/index.js mcp
+```
+
+**`.mcp.json` / Claude Desktop 設定：**
+
+```json
+{
+  "mcpServers": {
+    "furcdn": {
+      "command": "furcdn",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+提供的 tools：
+
+| Tool 名稱 | 說明 | 參數 |
+| --- | --- | --- |
+| `furcdn_domains_list` | 列出帳號下所有網域 | 無 |
+| `furcdn_domains_purge` | 刷新指定網域快取 | `domain`（id 或網域名稱） |
+| `furcdn_ssl_upload` | 上傳並啟用自訂 SSL 憑證 | `domain`、`cert`（PEM）、`key`（PEM） |
+| `furcdn_health` | 檢查 API 存活狀態 | 無 |
+
+任何底層 API 錯誤都會轉成 MCP tool 的 `isError` 回應（附錯誤訊息），不會讓
+server process 中斷。
+
+## 作為 Claude Code Skill 使用
+
+`skills/furcdn/SKILL.md` 是一份純文件型的 [Claude Code skill](https://docs.claude.com/claude-code)，
+教 Claude 怎麼用這支 CLI 完成「列出網域／刷新快取／上傳 SSL」等常見任務，
+不含額外程式碼。要在自己的專案啟用，把整個目錄複製或 symlink 進
+`.claude/skills/furcdn`：
+
+```bash
+mkdir -p .claude/skills
+ln -s /path/to/furcdn-cli/skills/furcdn .claude/skills/furcdn
+# 或直接複製一份：
+cp -r /path/to/furcdn-cli/skills/furcdn .claude/skills/furcdn
+```
+
 ## 目前涵蓋範圍
 
 這個 CLI 目前只包裝 FurCDN **公開、以 API key 鑑權**的端點：
