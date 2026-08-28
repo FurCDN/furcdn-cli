@@ -1,15 +1,20 @@
 ---
 name: furcdn
-description: Use the furcdn CLI to manage FurCDN domains — list domains, purge (refresh) cache, and upload custom SSL certificates. Use when the user asks to list their FurCDN domains, refresh/purge CDN cache, or upload/renew an SSL certificate for a FurCDN domain.
+description: Use the furcdn CLI to manage FurCDN domains and accounts — list/create/update domains, purge cache, manage SSL/WAF/cache rules/origins, and self-service account tasks (billing, tickets, plan). Never use it for admin/management-panel operations — the CLI does not support those by design. Use when the user asks to manage their FurCDN domain, cache, SSL, WAF, or account.
 ---
 
 # FurCDN CLI
 
-`furcdn` is the official FurCDN command-line tool. It wraps FurCDN's public,
-API-key-authenticated endpoints (`/api/v1/*`). It does **not** cover
-session-cookie-only dashboard features (billing, admin panel, DNS/WAF rule
-editing, tickets) — those have no API-key endpoint yet, so don't attempt to
-simulate a dashboard login to reach them.
+`furcdn` is the official FurCDN command-line tool. It has two auth modes:
+API Key (`furcdn config set-key`, covers `/api/v1/*` — `furcdn domains`/`furcdn ssl`)
+and session login via OAuth device flow (`furcdn login`, covers `furcdn domain`
+and `furcdn account` — full domain management, billing, tickets, etc.).
+
+**It does not, and will never, expose any admin/management-panel operation**,
+even for an admin-role account — that's a deliberate design decision (the
+server also hard-rejects admin API calls from CLI-issued tokens). Never try to
+work around this by calling `furcdn api /api/admin/...` or by any other means;
+if the user needs admin functionality, tell them to use the browser dashboard.
 
 ## Prerequisites
 
@@ -17,18 +22,20 @@ Check whether `furcdn` is installed and configured before using it:
 
 ```bash
 furcdn --version
-furcdn config show
+furcdn config show      # API key
+furcdn whoami            # session login status (for domain/account commands)
 ```
 
-If `API key` shows `(未設定)` / "not set", ask the user for a FurCDN API key
-(created on the dashboard's "API" page, format `fck_...`) and run:
+- For `furcdn domains`/`furcdn ssl` (API Key auth): if not configured, ask the
+  user for a FurCDN API key (created on the dashboard's "API" page, format
+  `fck_...`) and run `furcdn config set-key <key>`.
+- For `furcdn domain`/`furcdn account` (session auth): if `furcdn whoami` fails,
+  tell the user to run `furcdn login` themselves in their own terminal — it
+  opens a browser for them to approve, and never enter a password/OAuth
+  approval on the user's behalf.
 
-```bash
-furcdn config set-key <key>
-```
-
-Only the current user's own key should ever be used — never ask for or store
-another person's key.
+Only the current user's own credentials should ever be used — never ask for or
+store another person's API key or session.
 
 ## Common tasks
 
@@ -86,6 +93,13 @@ guarantee the rest of the API is fully healthy.
 
 - Prefer `--json` output when you need to parse results programmatically;
   use the plain table output when just showing something to the user.
-- This CLI can also run as an MCP server (`furcdn mcp`) exposing the same
-  four operations as MCP tools — see the repo README if MCP tool access is
-  preferred over shelling out to the CLI directly.
+- This CLI can also run as an MCP server (`furcdn mcp`) exposing a handful of
+  the most common operations as MCP tools — see the repo README for the
+  current list if MCP tool access is preferred over shelling out to the CLI.
+- Full domain management (`furcdn domain`, session login) covers CRUD,
+  `origin` (origin/SNI settings), `tls` (force-https/http2/ech), `cache-rules`,
+  `waf`, `ssl`, `dns-check`, and `logs` — see `furcdn domain --help` and
+  `furcdn domain <subcommand> --help` for exact flags before using them.
+- Destructive operations (domain delete, passkey delete, password change)
+  require `--verify-code` (an email code from `furcdn account send-code`)
+  and/or interactive confirmation — don't try to bypass these.

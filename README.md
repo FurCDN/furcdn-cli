@@ -3,10 +3,15 @@
 FurCDN 官方命令列工具。支援兩種鑑權方式，各自服務不同的端點群，CLI 內部依指令
 自動決定要用哪一種，不需要使用者自己選：
 
+- **Session 登入**（`furcdn login`，OAuth device flow）：`/api/domains`、`/api/user/**` 等
+  一般帳號的 dashboard 功能，對應 `furcdn domain` / `furcdn account`。**推薦的日常
+  登入方式**——密碼只在瀏覽器輸入，終端機/shell history 完全看不到密碼。
 - **API Key**（`furcdn config set-key`）：`/api/v1/**`（`furcdn domains` / `furcdn ssl`），
-  適合唯讀清單 + 刷新快取 + 上傳憑證的自動化場景。
-- **Session 登入**（`furcdn login`）：`/api/domains`、`/api/user/**`、`/api/admin/**` 等
-  幾乎全部 dashboard 功能，對應 `furcdn domain` / `furcdn account` / `furcdn admin`。
+  保留給舊版 v1 相容端點或第三方整合腳本使用。
+
+> **管理後台（admin）操作不在這支 CLI 的範圍內，即使你的帳號是 admin 也一樣**——
+> 這是刻意的設計決策，不是還沒做完。管理後台請直接用瀏覽器登入 dashboard。
+> 詳見下方「為什麼沒有 admin 指令」。
 
 ## 安裝
 
@@ -36,28 +41,42 @@ npm link   # 全域安裝 `furcdn` 指令；不想全域安裝可用 node dist/i
    設定檔   : /home/you/.config/furcdn/config.json
    ```
 
-## 登入（session 鑑權）
+## 登入（OAuth device flow）
 
-`furcdn domain` / `furcdn account` / `furcdn admin` 這三組指令需要先登入：
+`furcdn domain` / `furcdn account` 這兩組指令需要先登入。CLI **不會**向你要密碼——
+帳密只在瀏覽器裡輸入，走的是 [OAuth 2.0 Device Authorization Grant](https://datatracker.ietf.org/doc/html/rfc8628)
+風格的流程：
 
 ```bash
-furcdn login                       # 互動輸入帳號密碼
-furcdn login -u alice -p 'hunter2' # 或直接帶參數（注意 shell history）
-furcdn whoami
-furcdn logout
+$ furcdn login
+請在瀏覽器開啟以下網址完成授權：
+  https://www.furcdn.us/oauth/device?user_code=ABCD-1234
+
+或前往 https://www.furcdn.us/oauth/device 手動輸入代碼：ABCD-1234
+
+等待授權中...
+...
+已登入：alice（alice@example.com）
+
+$ furcdn whoami
+帳號：alice（alice@example.com）
+角色：user
+
+$ furcdn logout
+已登出。
 ```
 
-登入成功會把 `furcdn_token`（httpOnly session cookie 的值）存進
-`~/.config/furcdn/session.json`（權限 `0600`，比照 SSH key / `gh auth login` 的做法），
-之後這三組指令會自動帶上。也可以用 `FURCDN_SESSION_TOKEN` 環境變數覆蓋。
+流程：`furcdn login` 先呼叫 `/api/oauth/device/code` 拿到 `user_code`，接著會嘗試
+自動開啟瀏覽器（偵測不到 GUI 或桌面環境時靜默 fallback，網址一樣印在終端機上，
+用 `--no-browser` 可以直接跳過嘗試）；瀏覽器裡登入並核准後，CLI 依伺服器指定的
+`interval` 輪詢 `/api/oauth/device/token`，拿到 token 就存進
+`~/.config/furcdn/session.json`（權限 `0600`，比照 SSH key / `gh auth login` 的做法）。
+也可以用 `FURCDN_SESSION_TOKEN` 環境變數覆蓋。核准逾時（10 分鐘沒人操作）或在瀏覽器
+按拒絕，CLI 會印出清楚的錯誤並中止，重新執行 `furcdn login` 即可。
 
-**已知限制：Cloudflare Turnstile。** 正式站 `www.furcdn.us` 的登入介面啟用了
-Turnstile 人機驗證，登入 API 需要一個有效的 Turnstile token 才會放行。這個 token
-只能透過瀏覽器渲染 Turnstile widget 並完成挑戰取得，CLI 在終端機裡**無法自動完成
-這個步驟**——這是目前唯一沒有自動化掉的部分。`furcdn login --cf-token <token>`
-留了帶入口，如果你有辦法透過瀏覽器手動取得 token（例如自架、關閉 Turnstile 的
-測試環境，或未來取得瀏覽器輔助登入的授權 token）可以帶入；對正式站的日常使用，
-建議改用 API Key（`furcdn config set-key`，不受 Turnstile 影響）。
+`furcdn logout` 只清本機的 `session.json`——CLI 拿到的 token 存在本機檔案，不是
+瀏覽器 cookie，伺服器端 `/api/auth/logout` 本質上只是清 HTTP response 的
+`Set-Cookie` header，對「本機檔案」沒有實際作用，所以不必特地打這支 API。
 
 ## 指令
 
@@ -128,14 +147,29 @@ body（欄位名稱已對照後端 `route.ts` 原始碼核對過），常用欄�
 | `furcdn api <method> <path>` | 自動判斷 | 逃生艙口：對任何 route 送請求，見下方「涵蓋範圍」 |
 | `furcdn domains` / `furcdn ssl` | API Key | v1 精簡版：list / purge / ssl upload |
 | `furcdn info` | Session（`plans`/`origin-ips` 無需登入） | 叢集、公開方案、回源 IP 白名單、情報庫查詢、內建文檔 |
-| `furcdn domain` | Session | 完整版網域管理：CRUD、`ssl`（request/status/upload/delete）、`cache-rules`、`waf`（含 `ip-check`）、`dns-check`、`logs` |
+| `furcdn domain` | Session | 完整版網域管理：CRUD、`origin`（回源/SNI/Host override，主源站+備援）、`tls`（force-https/http2/ech 一覽與切換）、`ssl`（request/status/upload/delete）、`cache-rules`、`waf`（含 `ip-check`）、`dns-check`、`logs` |
 | `furcdn account` | Session | `balance`/`topup`/`redeem`/`discount-preview`、`change-password`/`change-email`/`settings`/`audit-log`、`notify`、`oauth`、`passkeys`（僅管理既有列表）、`api-keys`、`plan`（usage/history/auto-renew/buy/renew/upgrade）、`stats`、`alipay-verify`、`tickets` |
-| `furcdn admin` | Session + admin 角色 | `users`（含 balance/grant/bulk-delete）、`domains`、`plans`、`clusters`、`discount-codes`、`codes`、`analytics-plans`、`origin-ips`、`failover`、`invites`（+ config）、`ech`（+ keys）、`nodes`（含 deploy/pause/resume/sync-dns/token/errors）、`tickets`、`email-domains`、`email-templates`（+ test）、`alipay-config`、`dns-config`、`templates`、`analytics-config`、`geo`、`audit-log`、`notify`、`stats`、`threat-ips`（+ refresh） |
 | `furcdn mcp` | 依 tool 而定 | 見下方 MCP 章節 |
 
-危險操作（刪除網域/使用者/passkey、批次刪除、餘額調整、改密碼等）一律要求
-`--verify-code`（伺服器端的 email 二次驗證，先用 `furcdn account send-code` 索取）
-和/或互動確認（可用 `-y/--yes` 在腳本中跳過）。
+危險操作（刪除網域/passkey、改密碼等）一律要求 `--verify-code`（伺服器端的
+email 二次驗證，先用 `furcdn account send-code` 索取）和/或互動確認
+（可用 `-y/--yes` 在腳本中跳過）。
+
+`furcdn domain` 底下 WAF/快取/回源/TLS 這四類設定各有明確命名的子指令，不需要
+自己猜 JSON 欄位名：
+
+| 設定類別 | 指令 |
+| --- | --- |
+| WAF | `furcdn domain waf list/create/update/delete/defaults/ip-check` |
+| 快取規則 | `furcdn domain cache-rules list/create/update/delete/defaults` |
+| 回源 / SNI | `furcdn domain origin list/set/remove` |
+| TLS / HTTP | `furcdn domain tls status/set`（force-https、http2、ech） |
+| SSL 憑證 | `furcdn domain ssl request/status/upload/delete` |
+
+`furcdn domain origin set` 預設取代主源站（陣列 index 0），加 `--backup` 則
+附加一個備援；`furcdn domain origin remove --index <n>` 只能刪備援（index ≥1），
+底層都是先讀現有 `origins` 陣列、本地修改後整批 `PUT` 回去，跟 dashboard 的
+行為一致（OSS secret 等敏感欄位伺服器端會自動用 URL 比對還原，不會被清空）。
 
 ## 作為 MCP Server 使用
 
@@ -182,9 +216,10 @@ MCP server 啟動時會分別檢查本機是否已設定 API key / 已登入 ses
 只會影響對應的 tool，不會擋住其他 tool 或啟動流程本身。任何底層 API 錯誤都會
 轉成 MCP tool 的 `isError` 回應（附錯誤訊息），不會讓 server process 中斷。
 
-其餘 `furcdn admin` / `furcdn account` / `furcdn domain` 底下的指令目前**沒有**
-包成 MCP tool（數量太大，見下方「涵蓋範圍」）；需要透過 MCP 呼叫時，可以請
-MCP client 改用具備 shell 執行能力的方式直接呼叫 CLI 本身。
+其餘 `furcdn account` / `furcdn domain` 底下的指令目前**沒有**包成 MCP tool
+（數量太大，見下方「涵蓋範圍」）；需要透過 MCP 呼叫時，可以請 MCP client 改用
+具備 shell 執行能力的方式直接呼叫 CLI 本身。MCP tools 裡**沒有、也不會有**任何
+管理後台操作，理由同下方「為什麼沒有 admin 指令」。
 
 ## 作為 Claude Code Skill 使用
 
@@ -200,22 +235,35 @@ ln -s /path/to/furcdn-cli/skills/furcdn .claude/skills/furcdn
 cp -r /path/to/furcdn-cli/skills/furcdn .claude/skills/furcdn
 ```
 
+## 為什麼沒有 admin 指令
+
+`furcdn-cli` **刻意不提供任何管理後台（admin）操作**，即使你的帳號是 admin 角色也
+一樣。原因：
+
+1. **設計決策，不是缺功能。** 管理後台涉及使用者資料、餘額調整、批次刪除等高風險
+   操作，這類操作應該在瀏覽器裡以完整的 UI 上下文（確認對話框、審計介面、即時
+   資料）進行，不適合塞進終端機腳本。
+2. **伺服器端也這麼認為，而且是雙重防線。** `furcdn login`（OAuth device flow）核發
+   的 token 會被標記 `src="cli"`；後端 `requireAdmin()` 看到這個標記一律直接拒絕，
+   不管操作者的帳號角色是不是 admin。就算 CLI 這端出於某種 bug 送出了 admin 請求，
+   伺服器也會擋下來——CLI 這邊的 `furcdn api /api/admin/...` 提前擋掉只是給更清楚
+   的錯誤訊息，不是唯一的防線。
+3. 需要管理後台功能時，請直接用瀏覽器登入 `https://www.furcdn.us` 的 dashboard。
+
 ## 目前涵蓋範圍
 
-`app/api/**` 底下約 130 支 route，這支 CLI 的涵蓋策略：
+`app/api/**` 底下約 130 支 route（不含 `/api/admin/**`，理由見上），這支 CLI 的
+涵蓋策略：
 
 - **有專屬子指令、欄位對照過原始碼**：`furcdn domains`/`furcdn ssl`（v1，API Key）、
-  `furcdn info`、`furcdn domain`（完整版 CRUD、cache-rules、waf、ssl、dns-check、logs）、
-  `furcdn account`（帳務、安全、通知、oauth、passkeys 列表/刪除、api-keys、plan、
-  stats、alipay 實名認證、tickets）、`furcdn login`/`logout`/`whoami`。
-- **有專屬子指令、body 走 `--data` JSON（不是逐欄位手刻 flag）**：`furcdn admin` 底下
-  絕大部分資源。這些 route 欄位多且部分巢狀（例如 WAF 規則的 conditions），
-  逐一刻成 flag 維護成本過高；`--data` 仍然對應正確的 method/path，只是輸入方式
-  統一，伺服器端本來就會做完整驗證。
+  `furcdn info`、`furcdn domain`（完整版 CRUD、origin、tls、cache-rules、waf、
+  ssl、dns-check、logs）、`furcdn account`（帳務、安全、通知、oauth、passkeys
+  列表/刪除、api-keys、plan、stats、alipay 實名認證、tickets）、
+  `furcdn login`/`logout`/`whoami`。
 - **完全沒有專屬指令，但可用 `furcdn api <method> <path> --data <json>` 呼叫**：任何
-  上面兩類沒覆蓋到的、或未來新增的 `/api/**` route。這支通用指令會依路徑前綴
-  自動判斷該用 API Key 還是 session（可用 `--auth` 覆蓋），是刻意設計的逃生艙口，
-  不是半途而廢的替代品。
+  上面沒覆蓋到的、或未來新增的一般使用者 `/api/**` route（`/api/admin/**` 被明確
+  擋掉，見上）。這支通用指令會依路徑前綴自動判斷該用 API Key 還是 session
+  （可用 `--auth` 覆蓋），是刻意設計的逃生艙口，不是半途而廢的替代品。
 
 **明確跳過、不會有 CLI 指令**（原因如下，非遺漏）：
 
@@ -232,19 +280,12 @@ cp -r /path/to/furcdn-cli/skills/furcdn .claude/skills/furcdn
   + 平台 authenticator（Touch ID / Windows Hello / 安全金鑰）互動，CLI 環境做不到。
   已支援的是「管理既有 passkey」：`furcdn account passkeys list/delete`。
 
-**已知限制（非設計選擇，是真的卡住）**：
-
-- **`furcdn login` 在正式站需要手動取得 Turnstile token**（見上方「登入」章節）。
-  這是目前唯一沒辦法完全自動化的核心流程；不影響 API Key 鑑權的指令。
-
 **尚未做，但技術上可行、之後可以補**（TODO）：
 
 - `furcdn mcp` 只包了 7 個最常用工具（v1 4 個 + 完整版網域 create/update/delete），
-  `furcdn account`/`furcdn admin` 底下的指令尚未包成 MCP tool。
-- `furcdn admin` 底下多數 create/update 走 `--data`，尚未像 `furcdn domain create`
-  那樣為常用欄位補上個別 flag（例如 `furcdn admin plans create --name --price ...`）。
+  `furcdn account` 底下的指令尚未包成 MCP tool（`furcdn admin` 不會有，見上）。
 - `furcdn api` 目前只認 `key`/`session`/`none` 三種鑑權模式，若未來 API 出現第三種
-  鑑權方式（例如 OAuth Bearer）需要另外擴充。
+  鑑權方式需要另外擴充；`/api/admin/**` 已在這支指令裡明確擋掉，不受此項影響。
 
 ## 開發
 

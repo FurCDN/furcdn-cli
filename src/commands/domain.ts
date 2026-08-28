@@ -21,6 +21,25 @@ interface DomainListItem {
   sslEnabled: boolean;
 }
 
+// 對照 lib/origins.ts 的 OriginConfig。
+interface OriginConfig {
+  url: string;
+  type: "http" | "aliyun_oss" | "aws_s3" | "tencent_cos";
+  sni?: string | null;
+  hostOverride?: string | null;
+  ossAccessKeyId?: string | null;
+  ossAccessKeySecret?: string | null;
+}
+
+// GET /api/domains 回傳的完整欄位（節錄，只列這幾支指令需要的部分）。
+interface DomainDetail extends DomainListItem {
+  origins: OriginConfig[];
+  sslAutoRenew: boolean;
+  forceHttps: boolean;
+  http2Enabled: boolean;
+  echEnabled: boolean;
+}
+
 function parseDataArg(data?: string): Record<string, unknown> {
   if (!data) return {};
   const raw = data.startsWith("@") ? fs.readFileSync(data.slice(1), "utf8") : data;
@@ -234,6 +253,183 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
         fail(e);
       }
     });
+
+  // ---- origin（回源 / SNI，欄位對照 lib/origins.ts 的 OriginConfig + validateOrigins）----
+  // 底層一律是 PUT /api/domains/{id} { origins: OriginConfig[] }：陣列 index 0 = 主源站，
+  // 其餘 = 備援，跟 dashboard 邏輯一致。這幾支指令先 GET 現有 origins 陣列、在本地修改、
+  // 再整批 PUT 回去——secret 欄位（ossAccessKeySecret）伺服器回傳時已遮罩成 "******"，
+  // PUT 時遇到遮罩值會自動比對 URL 還原成 DB 舊值（resolveMaskedSecrets），不會被清空。
+  const origin = domain.command("origin").description("網域回源設定（主源站 + 備援，含 SNI/Host override）");
+
+  async function fetchDomainOrigins(
+    idOrName: string,
+  ): Promise<{ id: number; name: string; origins: OriginConfig[] }> {
+    const data = await apiFetch<{ domains: DomainDetail[] }>("GET", "/api/domains", {
+      auth: "session",
+    });
+    const found = /^\d+$/.test(idOrName)
+      ? data.domains.find((d) => d.id === Number(idOrName))
+      : data.domains.find((d) => d.domain === idOrName);
+    if (!found) throw new ApiError(404, `找不到網域：${idOrName}`);
+    return { id: found.id, name: found.domain, origins: found.origins || [] };
+  }
+
+  origin
+    .command("list <idOrName>")
+    .description("顯示目前的回源設定（主源站 + 備援）")
+    .option("--json", "輸出 JSON")
+    .action(async (idOrName: string, opts: { json?: boolean }) => {
+      try {
+        const { origins } = await fetchDomainOrigins(idOrName);
+        if (opts.json) return console.log(JSON.stringify(origins, null, 2));
+        origins.forEach((o, i) => {
+          console.log(
+            `[${i}]${i === 0 ? " (主源站)" : " (備援)"} ${o.url}  type=${o.type}` +
+              (o.sni ? `  sni=${o.sni}` : "") +
+              (o.hostOverride ? `  host=${o.hostOverride}` : ""),
+          );
+        });
+      } catch (e) {
+        fail(e);
+      }
+    });
+
+  origin
+    .command("set <idOrName>")
+    .description(
+      "新增/設定一個 origin：預設取代主源站（index 0），加 --backup 則附加為新的備援",
+    )
+    .requiredOption("--url <url>", "回源位址，例如 http://1.2.3.4:8080")
+    .option("--type <type>", "http/aliyun_oss/aws_s3/tencent_cos，預設 http", "http")
+    .option("--sni <host>", "自訂 TLS SNI（留空 = 自動）")
+    .option("--host-override <host>", "自訂回源 Host header（留空 = 自動）")
+    .option("--backup", "附加為備援，而非取代主源站")
+    .action(
+      async (
+        idOrName: string,
+        opts: { url: string; type: string; sni?: string; hostOverride?: string; backup?: boolean },
+      ) => {
+        try {
+          const { id, name, origins } = await fetchDomainOrigins(idOrName);
+          const next: OriginConfig = { url: opts.url, type: opts.type as OriginConfig["type"] };
+          if (opts.sni) next.sni = opts.sni;
+          if (opts.hostOverride) next.hostOverride = opts.hostOverride;
+          const updated = [...origins];
+          if (opts.backup) {
+            updated.push(next);
+          } else {
+            if (updated.length === 0) updated.push(next);
+            else updated[0] = next;
+          }
+          await apiFetch("PUT", `/api/domains/${id}`, {
+            auth: "session",
+            body: { origins: updated },
+          });
+          console.log(
+            opts.backup
+              ? `已為 ${name} 新增備援回源 ${opts.url}（index ${updated.length - 1}）。`
+              : `已將 ${name} 的主源站設為 ${opts.url}。`,
+          );
+        } catch (e) {
+          fail(e);
+        }
+      },
+    );
+
+  origin
+    .command("remove <idOrName>")
+    .description("刪除一個備援 origin（不能刪除 index 0 主源站，至少要保留一個 origin）")
+    .requiredOption("--index <n>", "要刪除的陣列 index（1 起跳，0 是主源站不可刪）")
+    .action(async (idOrName: string, opts: { index: string }) => {
+      try {
+        const idx = Number(opts.index);
+        if (!Number.isInteger(idx) || idx <= 0) {
+          throw new ApiError(0, "--index 必須是 >=1 的整數（index 0 是主源站，不可刪除）");
+        }
+        const { id, name, origins } = await fetchDomainOrigins(idOrName);
+        if (idx >= origins.length) {
+          throw new ApiError(0, `${name} 目前只有 ${origins.length} 個 origin，沒有 index ${idx}`);
+        }
+        const updated = origins.filter((_, i) => i !== idx);
+        await apiFetch("PUT", `/api/domains/${id}`, {
+          auth: "session",
+          body: { origins: updated },
+        });
+        console.log(`已刪除 ${name} 的備援 origin #${idx}。`);
+      } catch (e) {
+        fail(e);
+      }
+    });
+
+  // ---- tls（force-https/http2/ech + 唯讀 ssl 狀態，欄位對照 app/api/domains/[id]/route.ts 的 PUT 白名單）----
+  const tls = domain.command("tls").description("網域 TLS/HTTP 設定總覽與切換");
+
+  tls
+    .command("status <idOrName>")
+    .description("整合顯示 sslEnabled/sslAutoRenew/forceHttps/http2Enabled/echEnabled 現況")
+    .option("--json", "輸出 JSON")
+    .action(async (idOrName: string, opts: { json?: boolean }) => {
+      try {
+        const data = await apiFetch<{ domains: DomainDetail[] }>("GET", "/api/domains", {
+          auth: "session",
+        });
+        const found = /^\d+$/.test(idOrName)
+          ? data.domains.find((d) => d.id === Number(idOrName))
+          : data.domains.find((d) => d.domain === idOrName);
+        if (!found) throw new ApiError(404, `找不到網域：${idOrName}`);
+        const summary = {
+          domain: found.domain,
+          sslEnabled: found.sslEnabled,
+          sslAutoRenew: found.sslAutoRenew,
+          forceHttps: found.forceHttps,
+          http2Enabled: found.http2Enabled,
+          echEnabled: found.echEnabled,
+        };
+        if (opts.json) return console.log(JSON.stringify(summary, null, 2));
+        console.log(`網域：${summary.domain}`);
+        console.log(`  SSL 已啟用      : ${summary.sslEnabled ? "是" : "否"}`);
+        console.log(`  SSL 自動續簽    : ${summary.sslAutoRenew ? "是" : "否"}`);
+        console.log(`  強制 HTTPS      : ${summary.forceHttps ? "是" : "否"}`);
+        console.log(`  HTTP/2          : ${summary.http2Enabled ? "是" : "否"}`);
+        console.log(`  ECH             : ${summary.echEnabled ? "是" : "否"}`);
+      } catch (e) {
+        fail(e);
+      }
+    });
+
+  tls
+    .command("set <idOrName>")
+    .description("切換 force-https / http2 / ech（不帶對應旗標的欄位維持不變）")
+    .option("--force-https", "開啟強制 HTTPS")
+    .option("--no-force-https", "關閉強制 HTTPS")
+    .option("--http2", "開啟 HTTP/2")
+    .option("--no-http2", "關閉 HTTP/2")
+    .option("--ech", "開啟 ECH")
+    .option("--no-ech", "關閉 ECH")
+    .action(
+      async (
+        idOrName: string,
+        opts: { forceHttps?: boolean; http2?: boolean; ech?: boolean },
+      ) => {
+        try {
+          const id = await resolveDomainId(idOrName);
+          const body: Record<string, unknown> = {};
+          if (opts.forceHttps !== undefined) body.forceHttps = opts.forceHttps;
+          if (opts.http2 !== undefined) body.http2Enabled = opts.http2;
+          if (opts.ech !== undefined) body.echEnabled = opts.ech;
+          if (Object.keys(body).length === 0) {
+            throw new ApiError(
+              0,
+              "至少要帶一個旗標，例如 --force-https / --no-http2 / --ech",
+            );
+          }
+          await apiFetch("PUT", `/api/domains/${id}`, { auth: "session", body });
+          console.log(`已更新 ${idOrName} 的 TLS/HTTP 設定。`);
+        } catch (e) {
+          fail(e);
+        }
+      },
+    );
 
   // ---- ssl ----
   const ssl = domain.command("ssl").description("網域 SSL 憑證管理（自動申請 / 自訂上傳 / 刪除）");
