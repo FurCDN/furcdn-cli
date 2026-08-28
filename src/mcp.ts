@@ -9,7 +9,26 @@ import {
   uploadSsl,
   health,
 } from "./api.js";
-import { resolveApiKey } from "./config.js";
+import { apiFetch } from "./http.js";
+import { resolveApiKey, resolveSessionToken } from "./config.js";
+
+interface SessionDomain {
+  id: number;
+  domain: string;
+}
+
+// 完整版 create/update/delete 走 session 鑑權（跟 dashboard 完整網域管理一致），
+// 跟上面 4 個 API Key 版工具刻意分開解析 id/name——這組操作的是
+// /api/domains/**，不是 /api/v1/domains。
+async function resolveSessionDomainId(idOrName: string): Promise<number> {
+  if (/^\d+$/.test(idOrName)) return Number(idOrName);
+  const data = await apiFetch<{ domains: SessionDomain[] }>("GET", "/api/domains", {
+    auth: "session",
+  });
+  const found = data.domains.find((d) => d.domain === idOrName);
+  if (!found) throw new ApiError(404, `找不到網域：${idOrName}`);
+  return found.id;
+}
 
 // MCP tool 的錯誤一律轉成 { isError: true } 回應，絕不讓 process crash——
 // crash 會直接切斷 stdio transport，MCP client 那端只會看到連線斷掉，
@@ -106,6 +125,88 @@ export function createMcpServer(): McpServer {
   );
 
   server.registerTool(
+    "furcdn_domains_create",
+    {
+      title: "建立 FurCDN 網域（完整版，session 鑑權）",
+      description:
+        "建立新網域，需先用 `furcdn login` 登入本機 session。回源 URL 為主，複雜設定（多回源、OSS 等）請改用 CLI 的 `furcdn domain create --data`。",
+      inputSchema: {
+        domain: z.string().min(1).describe("要建立的網域名稱"),
+        clusterId: z.number().int().positive().describe("叢集 ID（見 furcdn_domains_list 或 furcdn info clusters）"),
+        origin: z.string().min(1).optional().describe("主要回源位址，例如 http://1.2.3.4:8080"),
+        originType: z
+          .enum(["http", "aliyun_oss", "aws_s3", "tencent_cos"])
+          .optional()
+          .describe("回源類型，預設 http"),
+      },
+    },
+    async ({ domain, clusterId, origin, originType }) => {
+      try {
+        const body: Record<string, unknown> = { domain, clusterId };
+        if (origin) body.origins = [{ url: origin, type: originType || "http" }];
+        const result = await apiFetch("POST", "/api/domains", { auth: "session", body });
+        return jsonResult(result);
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "furcdn_domains_update",
+    {
+      title: "更新 FurCDN 網域設定（完整版，session 鑑權）",
+      description:
+        "更新既有網域的簡單欄位，例如 enabled/cacheTime/forceHttps/wafEnabled 等。需先用 `furcdn login` 登入本機 session。",
+      inputSchema: {
+        domain: z.string().min(1).describe("網域的 id（數字字串）或完整網域名稱"),
+        fields: z
+          .record(z.string(), z.unknown())
+          .describe(
+            "要更新的欄位 key/value，例如 { \"enabled\": true, \"cacheTime\": 600 }",
+          ),
+      },
+    },
+    async ({ domain, fields }) => {
+      try {
+        const id = await resolveSessionDomainId(domain);
+        const result = await apiFetch("PUT", `/api/domains/${id}`, {
+          auth: "session",
+          body: fields,
+        });
+        return jsonResult(result);
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "furcdn_domains_delete",
+    {
+      title: "刪除 FurCDN 網域（完整版，session 鑑權，不可逆）",
+      description:
+        "刪除網域，連同快取規則、WAF 規則、統計一併刪除，不可逆。需先用 `furcdn account send-code`（或對應 API）取得 email 驗證碼。",
+      inputSchema: {
+        domain: z.string().min(1).describe("網域的 id（數字字串）或完整網域名稱"),
+        verifyCode: z.string().min(1).describe("email 驗證碼（x-verify-code）"),
+      },
+    },
+    async ({ domain, verifyCode }) => {
+      try {
+        const id = await resolveSessionDomainId(domain);
+        await apiFetch("DELETE", `/api/domains/${id}`, {
+          auth: "session",
+          headers: { "x-verify-code": verifyCode },
+        });
+        return jsonResult({ domain, ok: true });
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
     "furcdn_health",
     {
       title: "檢查 FurCDN API 存活狀態",
@@ -126,11 +227,16 @@ export function createMcpServer(): McpServer {
 }
 
 export async function runMcpServer(): Promise<void> {
+  // 不阻止啟動（MCP client 連上後應該仍能看到 tools/list），
+  // 但先把警告寫到 stderr——stdout 是 JSON-RPC channel，絕不能寫任何東西進去。
   if (!resolveApiKey()) {
-    // 不阻止啟動（MCP client 連上後應該仍能看到 tools/list），
-    // 但先把警告寫到 stderr——stdout 是 JSON-RPC channel，絕不能寫任何東西進去。
     console.error(
-      "[furcdn mcp] 警告：尚未設定 API key，工具呼叫會失敗。請先執行 `furcdn config set-key <key>`。",
+      "[furcdn mcp] 警告：尚未設定 API key，furcdn_domains_list/purge、furcdn_ssl_upload 會失敗。請先執行 `furcdn config set-key <key>`。",
+    );
+  }
+  if (!resolveSessionToken()) {
+    console.error(
+      "[furcdn mcp] 警告：尚未登入 session，furcdn_domains_create/update/delete 會失敗。請先執行 `furcdn login`。",
     );
   }
   const server = createMcpServer();

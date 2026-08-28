@@ -8,7 +8,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const entry = path.join(__dirname, "index.js");
 
-test("furcdn mcp exposes the 4 expected tools over stdio", async () => {
+test("furcdn mcp exposes the 7 expected tools over stdio", async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [entry, "mcp"],
@@ -22,8 +22,11 @@ test("furcdn mcp exposes the 4 expected tools over stdio", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     assert.deepEqual(names, [
+      "furcdn_domains_create",
+      "furcdn_domains_delete",
       "furcdn_domains_list",
       "furcdn_domains_purge",
+      "furcdn_domains_update",
       "furcdn_health",
       "furcdn_ssl_upload",
     ]);
