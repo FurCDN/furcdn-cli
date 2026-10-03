@@ -3,6 +3,27 @@ import type { Command } from "commander";
 import { apiFetch, ApiError } from "../http.js";
 import { renderTable } from "../format.js";
 import { promptConfirm } from "../prompt.js";
+import {
+  buildOriginPolicyFromFlags,
+  coerceInt,
+  coercePolicyValue,
+  isPlainObject,
+  ORIGIN_STRATEGIES,
+  parsePolicySetArgs,
+  POLICY_FLAGS,
+  policyFromData,
+  renderOriginProbes,
+  renderPolicyTable,
+  type OriginPolicy,
+  type OriginProbesResponse,
+} from "../originPolicy.js";
+import {
+  applyOriginSet,
+  buildOriginConfig,
+  renderOriginLine,
+  type OriginConfig,
+  type OriginType,
+} from "../origins.js";
 
 // 這組是「完整版」網域管理，走 session 鑑權（`furcdn login` 之後才能用），
 // 對應 dashboard 上網域頁面的幾乎所有操作。跟現有 `furcdn domains list/purge`
@@ -21,19 +42,11 @@ interface DomainListItem {
   sslEnabled: boolean;
 }
 
-// 對照 lib/origins.ts 的 OriginConfig。
-interface OriginConfig {
-  url: string;
-  type: "http" | "aliyun_oss" | "aws_s3" | "tencent_cos";
-  sni?: string | null;
-  hostOverride?: string | null;
-  ossAccessKeyId?: string | null;
-  ossAccessKeySecret?: string | null;
-}
-
 // GET /api/domains 回傳的完整欄位（節錄，只列這幾支指令需要的部分）。
 interface DomainDetail extends DomainListItem {
   origins: OriginConfig[];
+  /** master 存的是 normalize 後的完整物件；舊 master 可能沒有這個欄位。 */
+  originPolicy?: Partial<OriginPolicy> | null;
   sslAutoRenew: boolean;
   forceHttps: boolean;
   http2Enabled: boolean;
@@ -49,6 +62,9 @@ function parseDataArg(data?: string): Record<string, unknown> {
 // `--set key=value` 重複旗標：布林/數字字面值自動轉型，其餘當字串。
 // 用來覆蓋 PUT /api/domains/{id} 白名單裡的簡單欄位（cacheTime/enabled/forceHttps/...），
 // 複雜巢狀欄位（origins/cacheKeyHeaders/originHeaders）請改用 --data。
+// key 含 `.` 時會展開成巢狀物件；`originPolicy.<欄位>` 會套用 policy 的型別/範圍檢查。
+const POLICY_SET_PREFIX = "originPolicy.";
+
 function parseSetArgs(sets: string[] | undefined): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const s of sets || []) {
@@ -56,12 +72,33 @@ function parseSetArgs(sets: string[] | undefined): Record<string, unknown> {
     if (idx < 0) throw new ApiError(0, `--set 格式錯誤，需要 key=value：${s}`);
     const key = s.slice(0, idx);
     const raw = s.slice(idx + 1);
-    if (raw === "true") out[key] = true;
-    else if (raw === "false") out[key] = false;
-    else if (raw !== "" && !Number.isNaN(Number(raw))) out[key] = Number(raw);
-    else out[key] = raw;
+    let value: unknown;
+    if (key.startsWith(POLICY_SET_PREFIX)) {
+      value = coercePolicyValue(key.slice(POLICY_SET_PREFIX.length), raw);
+    } else if (key === "originPolicy") {
+      try {
+        value = JSON.parse(raw);
+      } catch {
+        throw new ApiError(0, `--set originPolicy 的值必須是 JSON 物件：${raw}`);
+      }
+    } else if (raw === "true") value = true;
+    else if (raw === "false") value = false;
+    else if (raw !== "" && !Number.isNaN(Number(raw))) value = Number(raw);
+    else value = raw;
+    setNested(out, key, value);
   }
   return out;
+}
+
+function setNested(out: Record<string, unknown>, key: string, value: unknown): void {
+  const parts = key.split(".");
+  let cursor = out;
+  for (const part of parts.slice(0, -1)) {
+    const next = cursor[part];
+    if (!isPlainObject(next)) cursor[part] = {};
+    cursor = cursor[part] as Record<string, unknown>;
+  }
+  cursor[parts[parts.length - 1]] = value;
 }
 
 async function resolveDomainId(idOrName: string): Promise<number> {
@@ -72,6 +109,48 @@ async function resolveDomainId(idOrName: string): Promise<number> {
   const found = data.domains.find((d) => d.domain === idOrName);
   if (!found) throw new ApiError(404, `找不到網域：${idOrName}`);
   return found.id;
+}
+
+// 把 originPolicy 的旗標接到一個指令上（create/update/origin policy set 共用）。
+// 布林欄位同時掛 --x 與 --no-x；兩者都沒給時 commander 會留 undefined，代表「不動這欄」。
+function addOriginPolicyOptions(cmd: Command): Command {
+  for (const spec of POLICY_FLAGS) {
+    const flag = spec.flag.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase());
+    if (flag === "probe-fallback" || flag === "probe-always" || flag === "retry-on-error") {
+      cmd.option(`--${flag}`, spec.hint);
+      cmd.option(`--no-${flag}`, `關閉：${spec.hint}`);
+    } else {
+      cmd.option(`--${flag} <value>`, spec.hint);
+    }
+  }
+  return cmd;
+}
+
+async function fetchDomainDetail(idOrName: string): Promise<DomainDetail> {
+  const data = await apiFetch<{ domains: DomainDetail[] }>("GET", "/api/domains", {
+    auth: "session",
+  });
+  const found =
+    /^\d+$/.test(idOrName)
+      ? data.domains.find((d) => d.id === Number(idOrName))
+      : data.domains.find((d) => d.domain === idOrName);
+  if (!found) throw new ApiError(404, `找不到網域：${idOrName}`);
+  return found;
+}
+
+// 合併三個來源的 originPolicy（優先序：policy 旗標 < --set < --data 內的 originPolicy）。
+// 只回傳使用者真的指定的欄位，讓伺服器做淺合併；空物件＝這次不動 policy。
+function mergeOriginPolicy(
+  opts: Record<string, unknown>,
+  setBody: Record<string, unknown>,
+  dataBody: Record<string, unknown>,
+): Record<string, unknown> {
+  const parts: Record<string, unknown>[] = [];
+  const fromFlags = buildOriginPolicyFromFlags(opts);
+  if (Object.keys(fromFlags).length > 0) parts.push(fromFlags);
+  if (isPlainObject(setBody.originPolicy)) parts.push(setBody.originPolicy);
+  if (isPlainObject(dataBody.originPolicy)) parts.push(dataBody.originPolicy);
+  return Object.assign({}, ...parts);
 }
 
 export function registerDomainCommand(program: Command, fail: (e: unknown) => never) {
@@ -106,9 +185,11 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
       }
     });
 
-  domain
+  const create = domain
     .command("create")
-    .description("建立新網域")
+    .description(
+      "建立新網域（可用 --origin-strategy 等旗標設定源站擇優 originPolicy，見 `furcdn domain origin policy set --help`）",
+    )
     .requiredOption("--domain <domain>", "網域名稱")
     .requiredOption("--cluster-id <id>", "叢集 ID（見 furcdn info clusters）")
     .option("--origin <url>", "主要回源位址，例如 http://1.2.3.4:8080")
@@ -117,76 +198,89 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
     .option("--real-ip-header <header>", "真實 IP header 名稱")
     .option("--origin-timeout <sec>", "回源逾時秒數（1~1800）")
     .option("--data <json>", "完整/額外欄位，原始 JSON 或 @file.json；會與上面旗標合併，--data 優先")
-    .option("--json", "輸出 JSON")
-    .action(
-      async (opts: {
-        domain: string;
-        clusterId: string;
-        origin?: string;
-        originType: string;
-        cacheTime?: string;
-        realIpHeader?: string;
-        originTimeout?: string;
-        data?: string;
-        json?: boolean;
-      }) => {
-        try {
-          const body: Record<string, unknown> = {
-            domain: opts.domain,
-            clusterId: Number(opts.clusterId),
-          };
-          if (opts.origin) {
-            body.origins = [{ url: opts.origin, type: opts.originType }];
-          }
-          if (opts.cacheTime) body.cacheTime = Number(opts.cacheTime);
-          if (opts.realIpHeader) body.realIpHeader = opts.realIpHeader;
-          if (opts.originTimeout) body.originTimeoutSec = Number(opts.originTimeout);
-          Object.assign(body, parseDataArg(opts.data));
-          const result = await apiFetch("POST", "/api/domains", {
-            auth: "session",
-            body,
-          });
-          if (opts.json) return console.log(JSON.stringify(result, null, 2));
-          console.log(`已建立網域 ${opts.domain}。`);
-          console.log(JSON.stringify(result, null, 2));
-        } catch (e) {
-          fail(e);
+    .option("--json", "輸出 JSON");
+  addOriginPolicyOptions(create);
+  create.action(
+    async (opts: {
+      domain: string;
+      clusterId: string;
+      origin?: string;
+      originType: string;
+      cacheTime?: string;
+      realIpHeader?: string;
+      originTimeout?: string;
+      data?: string;
+      json?: boolean;
+      [key: string]: unknown;
+    }) => {
+      try {
+        const dataBody = parseDataArg(opts.data);
+        const body: Record<string, unknown> = {
+          domain: opts.domain,
+          clusterId: Number(opts.clusterId),
+        };
+        if (opts.origin) {
+          body.origins = [{ url: opts.origin, type: opts.originType }];
         }
-      },
-    );
+        if (opts.cacheTime) body.cacheTime = Number(opts.cacheTime);
+        if (opts.realIpHeader) body.realIpHeader = opts.realIpHeader;
+        if (opts.originTimeout) body.originTimeoutSec = Number(opts.originTimeout);
+        const policy = mergeOriginPolicy(opts, {}, dataBody);
+        Object.assign(body, dataBody);
+        if (Object.keys(policy).length > 0) body.originPolicy = policy;
+        const result = await apiFetch("POST", "/api/domains", {
+          auth: "session",
+          body,
+        });
+        if (opts.json) return console.log(JSON.stringify(result, null, 2));
+        console.log(`已建立網域 ${opts.domain}。`);
+        console.log(JSON.stringify(result, null, 2));
+      } catch (e) {
+        fail(e);
+      }
+    },
+  );
 
-  domain
+  const update = domain
     .command("update <idOrName>")
     .description(
-      "更新網域設定：常用欄位用 --set key=value（可重複），複雜欄位（origins/originHeaders/cacheKeyHeaders）用 --data",
+      "更新網域設定：常用欄位用 --set key=value（可重複），複雜欄位（origins/originHeaders/cacheKeyHeaders）用 --data；源站擇優 originPolicy 可用 --origin-strategy 等旗標、--set originPolicy.<欄位>=值 或 --data",
     )
     .option(
       "--set <kv>",
-      "重複使用：key=value，例如 --set enabled=true --set cacheTime=600",
+      "重複使用：key=value，例如 --set enabled=true --set originPolicy.strategy=latency",
       (v: string, acc: string[]) => [...acc, v],
       [] as string[],
     )
     .option("--data <json>", "原始 JSON 或 @file.json，跟 --set 合併（--data 優先）")
-    .option("--json", "輸出 JSON")
-    .action(
-      async (idOrName: string, opts: { set: string[]; data?: string; json?: boolean }) => {
-        try {
-          const id = await resolveDomainId(idOrName);
-          const body = { ...parseSetArgs(opts.set), ...parseDataArg(opts.data) };
-          if (Object.keys(body).length === 0) {
-            throw new ApiError(0, "至少要用 --set 或 --data 指定一個要更新的欄位");
-          }
-          const result = await apiFetch("PUT", `/api/domains/${id}`, {
-            auth: "session",
-            body,
-          });
-          if (opts.json) return console.log(JSON.stringify(result, null, 2));
-          console.log(`已更新網域 #${id}。`);
-        } catch (e) {
-          fail(e);
+    .option("--json", "輸出 JSON");
+  addOriginPolicyOptions(update);
+  update.action(
+    async (
+      idOrName: string,
+      opts: { set: string[]; data?: string; json?: boolean; [key: string]: unknown },
+    ) => {
+      try {
+        const id = await resolveDomainId(idOrName);
+        const setBody = parseSetArgs(opts.set);
+        const dataBody = parseDataArg(opts.data);
+        const body: Record<string, unknown> = { ...setBody, ...dataBody };
+        const policy = mergeOriginPolicy(opts, setBody, dataBody);
+        if (Object.keys(body).length === 0 && Object.keys(policy).length === 0) {
+          throw new ApiError(0, "至少要用 --set、--data 或 policy 旗標指定一個要更新的欄位");
         }
-      },
-    );
+        if (Object.keys(policy).length > 0) body.originPolicy = policy;
+        const result = await apiFetch("PUT", `/api/domains/${id}`, {
+          auth: "session",
+          body,
+        });
+        if (opts.json) return console.log(JSON.stringify(result, null, 2));
+        console.log(`已更新網域 #${id}。`);
+      } catch (e) {
+        fail(e);
+      }
+    },
+  );
 
   domain
     .command("delete <idOrName>")
@@ -259,36 +353,29 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
   // 其餘 = 備援，跟 dashboard 邏輯一致。這幾支指令先 GET 現有 origins 陣列、在本地修改、
   // 再整批 PUT 回去——secret 欄位（ossAccessKeySecret）伺服器回傳時已遮罩成 "******"，
   // PUT 時遇到遮罩值會自動比對 URL 還原成 DB 舊值（resolveMaskedSecrets），不會被清空。
-  const origin = domain.command("origin").description("網域回源設定（主源站 + 備援，含 SNI/Host override）");
+  const origin = domain
+    .command("origin")
+    .description(
+      "網域回源設定（主源站 + 備援，含 SNI/Host override、權重/備用/探測目標等擇優欄位，以及 policy/probes）",
+    );
 
   async function fetchDomainOrigins(
     idOrName: string,
   ): Promise<{ id: number; name: string; origins: OriginConfig[] }> {
-    const data = await apiFetch<{ domains: DomainDetail[] }>("GET", "/api/domains", {
-      auth: "session",
-    });
-    const found = /^\d+$/.test(idOrName)
-      ? data.domains.find((d) => d.id === Number(idOrName))
-      : data.domains.find((d) => d.domain === idOrName);
-    if (!found) throw new ApiError(404, `找不到網域：${idOrName}`);
+    const found = await fetchDomainDetail(idOrName);
     return { id: found.id, name: found.domain, origins: found.origins || [] };
   }
 
   origin
     .command("list <idOrName>")
-    .description("顯示目前的回源設定（主源站 + 備援）")
+    .description("顯示目前的回源設定（主源站 + 備援，含權重/備用/探測目標等擇優欄位）")
     .option("--json", "輸出 JSON")
     .action(async (idOrName: string, opts: { json?: boolean }) => {
       try {
         const { origins } = await fetchDomainOrigins(idOrName);
         if (opts.json) return console.log(JSON.stringify(origins, null, 2));
-        origins.forEach((o, i) => {
-          console.log(
-            `[${i}]${i === 0 ? " (主源站)" : " (備援)"} ${o.url}  type=${o.type}` +
-              (o.sni ? `  sni=${o.sni}` : "") +
-              (o.hostOverride ? `  host=${o.hostOverride}` : ""),
-          );
-        });
+        if (origins.length === 0) return console.log("(尚未設定任何回源)");
+        origins.forEach((o, i) => console.log(renderOriginLine(o, i)));
       } catch (e) {
         fail(e);
       }
@@ -297,30 +384,50 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
   origin
     .command("set <idOrName>")
     .description(
-      "新增/設定一個 origin：預設取代主源站（index 0），加 --backup 則附加為新的備援",
+      "新增/設定一個 origin：預設取代主源站（index 0），加 --backup 則附加為新的備援（並標記 backup=true）",
     )
     .requiredOption("--url <url>", "回源位址，例如 http://1.2.3.4:8080")
     .option("--type <type>", "http/aliyun_oss/aws_s3/tencent_cos，預設 http", "http")
     .option("--sni <host>", "自訂 TLS SNI（留空 = 自動）")
     .option("--host-override <host>", "自訂回源 Host header（留空 = 自動）")
-    .option("--backup", "附加為備援，而非取代主源站")
+    .option("--backup", "附加為備援（並標記 backup=true），而非取代主源站")
+    .option("--weight <n>", "weighted/round_robin 權重（1~1000，預設 1）")
+    .option("--probe-host <host>", "ICMP/TCP 探測目標，留空 = 用 URL host")
+    .option("--latency-bias <ms>", "分數固定偏移毫秒（-1000~10000，負值＝偏好）")
+    .option("--probe", "啟用探測（預設）")
+    .option("--no-probe", "不探測此源站（latency 策略下排在有分數的源站之後）")
     .action(
       async (
         idOrName: string,
-        opts: { url: string; type: string; sni?: string; hostOverride?: string; backup?: boolean },
+        opts: {
+          url: string;
+          type: string;
+          sni?: string;
+          hostOverride?: string;
+          backup?: boolean;
+          weight?: string;
+          probeHost?: string;
+          latencyBias?: string;
+          probe?: boolean;
+        },
       ) => {
         try {
           const { id, name, origins } = await fetchDomainOrigins(idOrName);
-          const next: OriginConfig = { url: opts.url, type: opts.type as OriginConfig["type"] };
-          if (opts.sni) next.sni = opts.sni;
-          if (opts.hostOverride) next.hostOverride = opts.hostOverride;
-          const updated = [...origins];
-          if (opts.backup) {
-            updated.push(next);
-          } else {
-            if (updated.length === 0) updated.push(next);
-            else updated[0] = next;
-          }
+          const next = buildOriginConfig({
+            url: opts.url,
+            type: opts.type as OriginType,
+            sni: opts.sni,
+            hostOverride: opts.hostOverride,
+            backup: opts.backup,
+            weight: opts.weight === undefined ? undefined : coerceInt("--weight", opts.weight, 1, 1000),
+            probeHost: opts.probeHost,
+            latencyBiasMs:
+              opts.latencyBias === undefined
+                ? undefined
+                : coerceInt("--latency-bias", opts.latencyBias, -1000, 10000),
+            probeDisabled: opts.probe === undefined ? undefined : !opts.probe,
+          });
+          const updated = applyOriginSet(origins, next, !!opts.backup);
           await apiFetch("PUT", `/api/domains/${id}`, {
             auth: "session",
             body: { origins: updated },
@@ -356,6 +463,110 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
           body: { origins: updated },
         });
         console.log(`已刪除 ${name} 的備援 origin #${idx}。`);
+      } catch (e) {
+        fail(e);
+      }
+    });
+
+  // ---- origin policy / probes（源站擇優，契約 §1/§4）----
+  // policy 存於 Domain.originPolicy；PUT 時伺服器把傳入物件淺合併到既有 policy 後整體驗證，
+  // 傳 null 則重置為全部預設。節點端對缺漏欄位一律套預設，所以這裡只要送「要改的欄位」。
+  const originPolicy = origin
+    .command("policy")
+    .description(
+      `源站擇優（每個節點各自對源站探測後選路）的 originPolicy 設定：strategy=${ORIGIN_STRATEGIES.join("/")}`,
+    );
+
+  originPolicy
+    .command("get <idOrName>")
+    .description("顯示網域目前的 originPolicy（未自訂的欄位以預設值呈現）")
+    .option("--json", "輸出 JSON（原始儲存內容，不含預設值）")
+    .action(async (idOrName: string, opts: { json?: boolean }) => {
+      try {
+        const found = await fetchDomainDetail(idOrName);
+        if (opts.json) {
+          return console.log(JSON.stringify(found.originPolicy ?? {}, null, 2));
+        }
+        console.log(`網域 ${found.domain} 的源站擇優設定：`);
+        console.log(renderPolicyTable(found.originPolicy));
+      } catch (e) {
+        fail(e);
+      }
+    });
+
+  const policySet = originPolicy
+    .command("set <idOrName>")
+    .description(
+      "設定 originPolicy：只帶要改的欄位即可（伺服器淺合併），也可用 --set strategy=latency 或 --data",
+    )
+    .option(
+      "--set <kv>",
+      "重複使用：policy 欄位=值（可省略 originPolicy. 前綴），例如 --set strategy=latency --set retryStatuses=502,503",
+      (v: string, acc: string[]) => [...acc, v],
+      [] as string[],
+    )
+    .option("--data <json>", "policy 物件，或 { originPolicy: {...} }；原始 JSON 或 @file.json")
+    .option("--reset", "重置為全部預設（送出 originPolicy: null）")
+    .option("--json", "輸出 JSON");
+  addOriginPolicyOptions(policySet);
+  policySet.action(
+    async (
+      idOrName: string,
+      opts: {
+        set: string[];
+        data?: string;
+        reset?: boolean;
+        json?: boolean;
+        [key: string]: unknown;
+      },
+    ) => {
+      try {
+        const id = await resolveDomainId(idOrName);
+        if (opts.reset) {
+          await apiFetch("PUT", `/api/domains/${id}`, {
+            auth: "session",
+            body: { originPolicy: null },
+          });
+          console.log(`已將網域 #${id} 的 originPolicy 重置為全部預設。`);
+          return;
+        }
+        const fromFlags = buildOriginPolicyFromFlags(opts);
+        const fromSet = parsePolicySetArgs(opts.set);
+        const dataBody = parseDataArg(opts.data);
+        const fromData = Object.keys(dataBody).length > 0 ? policyFromData(dataBody) : {};
+        const policy = { ...fromFlags, ...fromSet, ...fromData };
+        if (Object.keys(policy).length === 0) {
+          throw new ApiError(
+            0,
+            "至少要用 policy 旗標、--set 或 --data 指定一個欄位（或用 --reset 重置）",
+          );
+        }
+        const result = await apiFetch("PUT", `/api/domains/${id}`, {
+          auth: "session",
+          body: { originPolicy: policy },
+        });
+        if (opts.json) return console.log(JSON.stringify(result, null, 2));
+        console.log(`已更新網域 #${id} 的 originPolicy。`);
+      } catch (e) {
+        fail(e);
+      }
+    },
+  );
+
+  origin
+    .command("probes <idOrName>")
+    .description("顯示各節點對各源站的即時探測結果（ICMP/TCP/HTTP 的 RTT 與丟包率）")
+    .option("--json", "輸出 JSON")
+    .action(async (idOrName: string, opts: { json?: boolean }) => {
+      try {
+        const id = await resolveDomainId(idOrName);
+        const data = await apiFetch<OriginProbesResponse>(
+          "GET",
+          `/api/domains/${id}/origin-probes`,
+          { auth: "session" },
+        );
+        if (opts.json) return console.log(JSON.stringify(data, null, 2));
+        console.log(renderOriginProbes(data.nodes));
       } catch (e) {
         fail(e);
       }

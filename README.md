@@ -147,7 +147,7 @@ body（欄位名稱已對照後端 `route.ts` 原始碼核對過），常用欄�
 | `furcdn api <method> <path>` | 自動判斷 | 逃生艙口：對任何 route 送請求，見下方「涵蓋範圍」 |
 | `furcdn domains` / `furcdn ssl` | API Key | v1 精簡版：list / purge / ssl upload |
 | `furcdn info` | Session（`plans`/`origin-ips` 無需登入） | 叢集、公開方案、回源 IP 白名單、情報庫查詢、內建文檔 |
-| `furcdn domain` | Session | 完整版網域管理：CRUD、`origin`（回源/SNI/Host override，主源站+備援）、`tls`（force-https/http2/ech 一覽與切換）、`ssl`（request/status/upload/delete）、`cache-rules`、`waf`（含 `ip-check`）、`dns-check`、`logs` |
+| `furcdn domain` | Session | 完整版網域管理：CRUD、`origin`（回源/SNI/Host override，主源站+備援，含源站擇優 `policy`/`probes`）、`tls`（force-https/http2/ech 一覽與切換）、`ssl`（request/status/upload/delete）、`cache-rules`、`waf`（含 `ip-check`）、`dns-check`、`logs` |
 | `furcdn account` | Session | `balance`/`topup`/`redeem`/`discount-preview`、`change-password`/`change-email`/`settings`/`audit-log`、`notify`、`oauth`、`passkeys`（僅管理既有列表）、`api-keys`、`plan`（usage/history/auto-renew/buy/renew/upgrade）、`stats`、`alipay-verify`、`tickets` |
 | `furcdn mcp` | 依 tool 而定 | 見下方 MCP 章節 |
 
@@ -163,6 +163,7 @@ email 二次驗證，先用 `furcdn account send-code` 索取）和/或互動確
 | WAF | `furcdn domain waf list/create/update/delete/defaults/ip-check` |
 | 快取規則 | `furcdn domain cache-rules list/create/update/delete/defaults` |
 | 回源 / SNI | `furcdn domain origin list/set/remove` |
+| 源站擇優 | `furcdn domain origin policy get/set`、`furcdn domain origin probes` |
 | TLS / HTTP | `furcdn domain tls status/set`（force-https、http2、ech） |
 | SSL 憑證 | `furcdn domain ssl request/status/upload/delete` |
 
@@ -171,10 +172,55 @@ email 二次驗證，先用 `furcdn account send-code` 索取）和/或互動確
 底層都是先讀現有 `origins` 陣列、本地修改後整批 `PUT` 回去，跟 dashboard 的
 行為一致（OSS secret 等敏感欄位伺服器端會自動用 URL 比對還原，不會被清空）。
 
+### 源站擇優（origin selection）
+
+多源站時，可以讓**每個節點**從自己的網路位置對各源站做 ICMP/TCP/HTTP 探測，
+再由節點本地挑出延遲最低的源站（不是 master 集中決定）。設定存在網域的
+`originPolicy`，只要把 `strategy` 設成 `latency` 就會啟用擇優：
+
+```bash
+# 建立時直接指定
+furcdn domain create --domain example.com --cluster-id 1 \
+  --origin-strategy latency --probe-method icmp --switch-threshold 20
+
+# 既有網域：只帶要改的欄位，伺服器會淺合併保留其餘設定
+furcdn domain update example.com --origin-strategy latency --min-hold 60
+
+# 等價寫法（--set 可用裸欄位名，也可加 originPolicy. 前綴）
+furcdn domain origin policy set example.com --set strategy=latency --set retryStatuses=502,503
+
+# 檢視生效中的完整設定（未自訂欄位標為「預設」）
+furcdn domain origin policy get example.com
+furcdn domain origin policy get example.com --json
+
+# 重置為全部預設（送出 originPolicy: null）
+furcdn domain origin policy set example.com --reset
+```
+
+每個源站另有權重/備用/探測目標等欄位，`origin set` 有對應旗標：
+
+```bash
+furcdn domain origin set example.com --url http://a.example --weight 3
+furcdn domain origin set example.com --url http://b.example --backup --probe-host 1.2.3.4
+furcdn domain origin set example.com --url http://c.example --latency-bias -50 --no-probe
+furcdn domain origin list example.com          # 一併顯示 weight/backup/probe-host 等
+```
+
+查各節點最近的探測結果（RTT、丟包、該節點選中的源站）：
+
+```bash
+furcdn domain origin probes example.com
+furcdn domain origin probes example.com --json
+```
+
+可用策略：`failover`（預設，依序失敗才切）、`latency`（擇優）、`round_robin`、
+`weighted`（用 `origin.weight`）、`random`、`ip_hash`（`--hash-key client_ip|uri`）。
+完整欄位、範圍、預設值與遲滯行為見官方文檔的「源站擇優」章節。
+
 ## 作為 MCP Server 使用
 
 `furcdn mcp` 會以 stdio 啟動一個 [MCP](https://modelcontextprotocol.io) server，
-把上面四個操作包成 MCP tools。鑑權沿用本機既有設定（`furcdn config set-key`
+把常用的網域操作包成 MCP tools（清單見下表）。鑑權沿用本機既有設定（`furcdn config set-key`
 或 `FURCDN_API_KEY` 環境變數）——MCP tool 的參數裡**不需要**、也不應該傳 API key。
 
 先確保已經 `npm run build`（或已 `npm link`），再把它加進你的 MCP client 設定：
@@ -210,6 +256,10 @@ claude mcp add furcdn -- node /path/to/furcdn-cli/dist/index.js mcp
 | `furcdn_domains_create` | 建立新網域（完整版） | `domain`、`clusterId`、`origin?`、`originType?` | Session（需先 `furcdn login`） |
 | `furcdn_domains_update` | 更新網域簡單欄位 | `domain`、`fields`（key/value） | Session |
 | `furcdn_domains_delete` | 刪除網域（不可逆） | `domain`、`verifyCode` | Session |
+| `furcdn_domains_origin_policy_get` | 查詢源站擇優設定 | `domain` | Session |
+| `furcdn_domains_origin_policy_set` | 設定源站擇優（只帶要改的欄位；`reset` 重置） | `domain`、`strategy?`、`probeMethod?`、`probeFallback?`、`probeIntervalSec?`、`probeTimeoutMs?`、`probeCount?`、`probePort?`、`probePath?`、`probeAlways?`、`scoreWindow?`、`lossPenaltyMs?`、`maxLatencyMs?`、`switchThresholdMs?`、`minHoldSec?`、`hashKey?`、`retryStatuses?`、`retryOnError?`、`maxAttempts?`、`reset?` | Session |
+| `furcdn_domains_origin_probes` | 查詢各節點源站探測結果 | `domain` | Session |
+| `furcdn_domains_origin_set` | 新增/設定單一源站（含權重/備用/探測欄位） | `domain`、`url`、`type?`、`sni?`、`hostOverride?`、`backup?`、`weight?`、`probeHost?`、`latencyBiasMs?`、`probeDisabled?` | Session |
 | `furcdn_health` | 檢查 API 存活狀態 | 無 | 無 |
 
 MCP server 啟動時會分別檢查本機是否已設定 API key / 已登入 session，缺哪一種
@@ -256,8 +306,8 @@ cp -r /path/to/furcdn-cli/skills/furcdn .claude/skills/furcdn
 涵蓋策略：
 
 - **有專屬子指令、欄位對照過原始碼**：`furcdn domains`/`furcdn ssl`（v1，API Key）、
-  `furcdn info`、`furcdn domain`（完整版 CRUD、origin、tls、cache-rules、waf、
-  ssl、dns-check、logs）、`furcdn account`（帳務、安全、通知、oauth、passkeys
+  `furcdn info`、`furcdn domain`（完整版 CRUD、origin 與源站擇優 policy/probes、
+  tls、cache-rules、waf、ssl、dns-check、logs）、`furcdn account`（帳務、安全、通知、oauth、passkeys
   列表/刪除、api-keys、plan、stats、alipay 實名認證、tickets）、
   `furcdn login`/`logout`/`whoami`。
 - **完全沒有專屬指令，但可用 `furcdn api <method> <path> --data <json>` 呼叫**：任何
@@ -282,7 +332,8 @@ cp -r /path/to/furcdn-cli/skills/furcdn .claude/skills/furcdn
 
 **尚未做，但技術上可行、之後可以補**（TODO）：
 
-- `furcdn mcp` 只包了 7 個最常用工具（v1 4 個 + 完整版網域 create/update/delete），
+- `furcdn mcp` 只包了 11 個最常用工具（v1 4 個 + 完整版網域 create/update/delete 與
+  `origin_policy_get/set`、`origin_probes`、`origin_set`），
   `furcdn account` 底下的指令尚未包成 MCP tool（`furcdn admin` 不會有，見上）。
 - `furcdn api` 目前只認 `key`/`session`/`none` 三種鑑權模式，若未來 API 出現第三種
   鑑權方式需要另外擴充；`/api/admin/**` 已在這支指令裡明確擋掉，不受此項影響。

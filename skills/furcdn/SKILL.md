@@ -81,6 +81,29 @@ furcdn health
 Pure liveness check of the configured API base URL; a 200 here does not
 guarantee the rest of the API is fully healthy.
 
+### Origin selection (multi-origin, per-node latency)
+
+Only relevant when a domain has more than one origin. `originPolicy` decides how
+each edge node picks an origin; setting `strategy` to `latency` turns on
+per-node ICMP/TCP/HTTP probing and picks the lowest-latency origin *for that
+node* (not a single global choice).
+
+```bash
+furcdn domain origin policy get example.com       # current effective policy
+furcdn domain origin policy set example.com --set strategy=latency
+furcdn domain origin probes example.com           # per-node RTT/loss + selected origin
+furcdn domain origin list example.com             # per-origin weight/backup/probe-host
+furcdn domain origin set example.com --url http://origin2.example --backup --weight 2
+```
+
+- `furcdn domain update example.com --origin-strategy latency ...` is shorthand
+  for setting the policy; only the fields you pass are changed (the server
+  shallow-merges), and `--reset` on `origin policy set` restores the defaults.
+- Nodes need ICMP egress to the origin; if ICMP is blocked or unavailable the
+  policy falls back to TCP connect by default (`probeFallback`).
+- Don't switch to `latency` unless the user asks — `failover` (the default) is
+  the safest for a single primary + backups setup.
+
 ## Error handling
 
 - `401` → API key missing or invalid. Tell the user to run
@@ -94,12 +117,16 @@ guarantee the rest of the API is fully healthy.
 - Prefer `--json` output when you need to parse results programmatically;
   use the plain table output when just showing something to the user.
 - This CLI can also run as an MCP server (`furcdn mcp`) exposing a handful of
-  the most common operations as MCP tools — see the repo README for the
-  current list if MCP tool access is preferred over shelling out to the CLI.
+  the most common operations as MCP tools (including
+  `furcdn_domains_origin_policy_get/set`, `furcdn_domains_origin_probes` and
+  `furcdn_domains_origin_set`) — see the repo README for the current list if
+  MCP tool access is preferred over shelling out to the CLI.
 - Full domain management (`furcdn domain`, session login) covers CRUD,
-  `origin` (origin/SNI settings), `tls` (force-https/http2/ech), `cache-rules`,
-  `waf`, `ssl`, `dns-check`, and `logs` — see `furcdn domain --help` and
-  `furcdn domain <subcommand> --help` for exact flags before using them.
+  `origin` (origin/SNI settings, per-origin weight/backup/probe fields, and the
+  `policy`/`probes` subcommands for origin selection), `tls`
+  (force-https/http2/ech), `cache-rules`, `waf`, `ssl`, `dns-check`, and `logs`
+  — see `furcdn domain --help` and `furcdn domain <subcommand> --help` for
+  exact flags before using them.
 - Destructive operations (domain delete, passkey delete, password change)
   require `--verify-code` (an email code from `furcdn account send-code`)
   and/or interactive confirmation — don't try to bypass these.
