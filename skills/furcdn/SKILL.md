@@ -1,14 +1,16 @@
 ---
 name: furcdn
-description: Use the furcdn CLI to manage FurCDN domains and accounts — list/create/update domains, purge cache, manage SSL/WAF/cache rules/origins, and self-service account tasks (billing, tickets, plan). Never use it for admin/management-panel operations — the CLI does not support those by design. Use when the user asks to manage their FurCDN domain, cache, SSL, WAF, or account.
+description: Use the furcdn CLI to manage FurCDN domains and accounts — list/create/update domains, purge cache, manage SSL/WAF/cache rules/origins, deploy static sites with Pages, and self-service account tasks (billing, tickets, plan). Never use it for admin/management-panel operations — the CLI does not support those by design. Use when the user asks to manage their FurCDN domain, cache, SSL, WAF, or account.
 ---
 
 # FurCDN CLI
 
 `furcdn` is the official FurCDN command-line tool. It has two auth modes:
 API Key (`furcdn config set-key`, covers `/api/v1/*` — `furcdn domains`/`furcdn ssl`)
-and session login via OAuth device flow (`furcdn login`, covers `furcdn domain`
-and `furcdn account` — full domain management, billing, tickets, etc.).
+and session login via OAuth device flow (`furcdn login`, covers `furcdn domain`,
+`furcdn account` and `furcdn pages` — full domain management, billing, tickets,
+static hosting, etc.). `furcdn pages` picks the right mode automatically:
+API key when configured, otherwise the session.
 
 **It does not, and will never, expose any admin/management-panel operation**,
 even for an admin-role account — that's a deliberate design decision (the
@@ -104,12 +106,49 @@ furcdn domain origin set example.com --url http://origin2.example --backup --wei
 - Don't switch to `latency` unless the user asks — `failover` (the default) is
   the safest for a single primary + backups setup.
 
+### Deploy a static site (FurCDN Pages, beta)
+
+FurCDN Pages hosts a static folder at `https://<slug>.pages.furcdn.top`.
+It is in beta and gated: every Pages API returns `403 pages_beta_required`
+until the account redeems a beta code. The user must supply the code — never
+guess one or reuse someone else's.
+
+```bash
+furcdn pages beta status
+furcdn pages beta redeem PGB-XXXX-XXXX-XXXX
+furcdn pages create my-blog --production-branch main
+furcdn pages deploy ./dist --site my-blog --branch main --message "deploy"
+furcdn pages deployments my-blog
+furcdn pages activate my-blog <id>        # rollback / promote
+furcdn pages usage
+```
+
+- The folder root must contain `index.html`. The CLI packs a tar.gz and
+  enforces 20MB total / 2000 files / 255-char paths locally before uploading.
+  `.git`, `node_modules` and `.DS_Store` are ignored; symlinks pointing outside
+  the folder are rejected.
+- Deploying the site's production branch goes live automatically; any other
+  branch only produces a preview URL (`https://<slug>--<key>.<base>`).
+- If content scanning flags the upload, the deployment stays `held` (not live)
+  pending admin review. Show the user the `scanReasons` and stop — don't retry
+  or tweak files to get around the check.
+- Destructive commands (`delete`, `rm-deployment`) ask for confirmation; only
+  pass `-y/--yes` when the user explicitly asked to delete something.
+
 ## Error handling
 
 - `401` → API key missing or invalid. Tell the user to run
   `furcdn config set-key <key>`.
 - `403` → the domain doesn't belong to this account's API key.
 - `429` → rate limited; wait, don't retry immediately in a loop.
+- `403 pages_beta_required` → Pages is beta-gated; tell the user to redeem a
+  code with `furcdn pages beta redeem <code>`.
+- `403 pages_banned` / `pages_site_suspended` → the account or site was
+  suspended; don't try to work around it, point the user to support/dashboard.
+- `422 pages_content_blocked` → content scanning blocked the upload (phishing
+  signals); show the `reasons` list and do not retry.
+- `413 pages_quota_exceeded` / `pages_site_too_large` → show `furcdn pages
+  usage` so the user can see the 100MB account quota / 20MB per-site limit.
 - Network errors → report the failure; don't silently retry indefinitely.
 
 ## Notes
@@ -118,8 +157,9 @@ furcdn domain origin set example.com --url http://origin2.example --backup --wei
   use the plain table output when just showing something to the user.
 - This CLI can also run as an MCP server (`furcdn mcp`) exposing a handful of
   the most common operations as MCP tools (including
-  `furcdn_domains_origin_policy_get/set`, `furcdn_domains_origin_probes` and
-  `furcdn_domains_origin_set`) — see the repo README for the current list if
+  `furcdn_domains_origin_policy_get/set`, `furcdn_domains_origin_probes`,
+  `furcdn_domains_origin_set`, and the `furcdn_pages_*` tools) — see the repo
+  README for the current list if
   MCP tool access is preferred over shelling out to the CLI.
 - Full domain management (`furcdn domain`, session login) covers CRUD,
   `origin` (origin/SNI settings, per-origin weight/backup/probe fields, and the

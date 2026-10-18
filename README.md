@@ -4,10 +4,10 @@ FurCDN 官方命令列工具。支援兩種鑑權方式，各自服務不同的�
 自動決定要用哪一種，不需要使用者自己選：
 
 - **Session 登入**（`furcdn login`，OAuth device flow）：`/api/domains`、`/api/user/**` 等
-  一般帳號的 dashboard 功能，對應 `furcdn domain` / `furcdn account`。**推薦的日常
-  登入方式**——密碼只在瀏覽器輸入，終端機/shell history 完全看不到密碼。
-- **API Key**（`furcdn config set-key`）：`/api/v1/**`（`furcdn domains` / `furcdn ssl`），
-  保留給舊版 v1 相容端點或第三方整合腳本使用。
+  一般帳號的 dashboard 功能，對應 `furcdn domain` / `furcdn account` / `furcdn pages`。
+  **推薦的日常登入方式**——密碼只在瀏覽器輸入，終端機/shell history 完全看不到密碼。
+- **API Key**（`furcdn config set-key`）：`/api/v1/**`（`furcdn domains` / `furcdn ssl` /
+  `furcdn pages`），保留給舊版 v1 相容端點、CI 或第三方整合腳本使用。
 
 > **管理後台（admin）操作不在這支 CLI 的範圍內，即使你的帳號是 admin 也一樣**——
 > 這是刻意的設計決策，不是還沒做完。管理後台請直接用瀏覽器登入 dashboard。
@@ -114,6 +114,39 @@ $ furcdn ssl upload example.com --cert ./fullchain.pem --key ./privkey.pem
 已為 example.com 上傳並啟用自訂 SSL 憑證。
 ```
 
+### `furcdn pages`（靜態網站託管，內測）
+
+把一個資料夾變成靜態網站：`https://<slug>.pages.furcdn.top`。目前為內測，
+所有 Pages API 都要先兌換內測碼（未解鎖時回 `403 pages_beta_required`）。
+
+```bash
+furcdn pages beta redeem PGB-XXXX-XXXX-XXXX   # 解鎖（已解鎖者再兌換不會消耗碼）
+furcdn pages beta status
+furcdn pages list
+furcdn pages create my-blog --production-branch main
+furcdn pages deploy ./dist --site my-blog --branch main --message "first deploy"
+furcdn pages deploy ./dist --site my-blog --create   # 站點不存在時一併建立
+furcdn pages deployments my-blog
+furcdn pages activate my-blog 12          # rollback / promote
+furcdn pages rm-deployment my-blog 11     # 不能刪目前上線中的版本
+furcdn pages delete my-blog
+furcdn pages usage
+```
+
+鑑權自動選擇：有設定 API key（`FURCDN_API_KEY` 或 `furcdn config set-key`）就走
+`/api/v1/pages`，否則用 `furcdn login` 的 session 走 `/api/pages`。所有讀取類
+指令都支援 `--json`；`delete` 與 `rm-deployment` 會要求互動確認，腳本可用
+`-y/--yes` 跳過。非互動環境（CI、stdin 被關閉）下沒有 `--yes` 會直接報錯
+「非互動環境請加 --yes」，不會卡住等輸入。
+
+`deploy` 會在本機先把資料夾打包成 tar.gz，並做與伺服器一致的預檢：根目錄必須有
+`index.html`、解壓後總和 ≤ 20MB、檔案數 ≤ 2000、路徑 ≤ 255 字元；自動忽略
+`.git`、`node_modules`、`.DS_Store`，也不會跟隨指到資料夾外面的符號連結。
+分支等於站點的生產分支時會自動上線，其他分支只產生預覽網址
+（`https://<slug>--<previewKey>.pages.furcdn.top`）。內容掃描判定需要人工審核時，
+版本會停在 `held`，核准前不會上線；掃描原因會一併印出。Pages 流量併入套餐的
+每月流量計算，超過額度或沒有有效套餐時站點會顯示「服務已停用」。
+
 ### `furcdn health`
 
 檢查目前 API base URL 是否存活（純 liveness，不代表 API 已就緒）。
@@ -149,6 +182,7 @@ body（欄位名稱已對照後端 `route.ts` 原始碼核對過），常用欄�
 | `furcdn info` | Session（`plans`/`origin-ips` 無需登入） | 叢集、公開方案、回源 IP 白名單、情報庫查詢、內建文檔 |
 | `furcdn domain` | Session | 完整版網域管理：CRUD、`origin`（回源/SNI/Host override，主源站+備援，含源站擇優 `policy`/`probes`）、`tls`（force-https/http2/ech 一覽與切換）、`ssl`（request/status/upload/delete）、`cache-rules`、`waf`（含 `ip-check`）、`dns-check`、`logs` |
 | `furcdn account` | Session | `balance`/`topup`/`redeem`/`discount-preview`、`change-password`/`change-email`/`settings`/`audit-log`、`notify`、`oauth`、`passkeys`（僅管理既有列表）、`api-keys`、`plan`（usage/history/auto-renew/buy/renew/upgrade）、`stats`、`alipay-verify`、`tickets` |
+| `furcdn pages` | 自動（API Key 或 Session） | Pages 靜態託管：`list`/`create`/`deploy`/`deployments`/`activate`/`rm-deployment`/`delete`/`usage`/`beta redeem`/`beta status` |
 | `furcdn mcp` | 依 tool 而定 | 見下方 MCP 章節 |
 
 危險操作（刪除網域/passkey、改密碼等）一律要求 `--verify-code`（伺服器端的
@@ -260,6 +294,13 @@ claude mcp add furcdn -- node /path/to/furcdn-cli/dist/index.js mcp
 | `furcdn_domains_origin_policy_set` | 設定源站擇優（只帶要改的欄位；`reset` 重置） | `domain`、`strategy?`、`probeMethod?`、`probeFallback?`、`probeIntervalSec?`、`probeTimeoutMs?`、`probeCount?`、`probePort?`、`probePath?`、`probeAlways?`、`scoreWindow?`、`lossPenaltyMs?`、`maxLatencyMs?`、`switchThresholdMs?`、`minHoldSec?`、`hashKey?`、`retryStatuses?`、`retryOnError?`、`maxAttempts?`、`reset?` | Session |
 | `furcdn_domains_origin_probes` | 查詢各節點源站探測結果 | `domain` | Session |
 | `furcdn_domains_origin_set` | 新增/設定單一源站（含權重/備用/探測欄位） | `domain`、`url`、`type?`、`sni?`、`hostOverride?`、`backup?`、`weight?`、`probeHost?`、`latencyBiasMs?`、`probeDisabled?` | Session |
+| `furcdn_pages_list` | 列出 Pages 站點與用量 | 無 | API Key 或 Session（自動） |
+| `furcdn_pages_create` | 建立 Pages 站點 | `slug`、`productionBranch?` | 同上 |
+| `furcdn_pages_deploy` | 打包本機資料夾並部署 | `site`、`dir`、`branch?`、`message?`、`create?` | 同上 |
+| `furcdn_pages_deployments` | 列出站點部署版本 | `site` | 同上 |
+| `furcdn_pages_activate` | 切換上線版本 | `site`、`id` | 同上 |
+| `furcdn_pages_delete` | 刪除站點（不可逆） | `site` | 同上 |
+| `furcdn_pages_beta_redeem` | 兌換 Pages 內測碼 | `code` | 同上 |
 | `furcdn_health` | 檢查 API 存活狀態 | 無 | 無 |
 
 MCP server 啟動時會分別檢查本機是否已設定 API key / 已登入 session，缺哪一種
@@ -309,6 +350,7 @@ cp -r /path/to/furcdn-cli/skills/furcdn .claude/skills/furcdn
   `furcdn info`、`furcdn domain`（完整版 CRUD、origin 與源站擇優 policy/probes、
   tls、cache-rules、waf、ssl、dns-check、logs）、`furcdn account`（帳務、安全、通知、oauth、passkeys
   列表/刪除、api-keys、plan、stats、alipay 實名認證、tickets）、
+  `furcdn pages`（靜態網站部署、版本管理、用量與內測碼）、
   `furcdn login`/`logout`/`whoami`。
 - **完全沒有專屬指令，但可用 `furcdn api <method> <path> --data <json>` 呼叫**：任何
   上面沒覆蓋到的、或未來新增的一般使用者 `/api/**` route（`/api/admin/**` 被明確
@@ -332,8 +374,8 @@ cp -r /path/to/furcdn-cli/skills/furcdn .claude/skills/furcdn
 
 **尚未做，但技術上可行、之後可以補**（TODO）：
 
-- `furcdn mcp` 只包了 11 個最常用工具（v1 4 個 + 完整版網域 create/update/delete 與
-  `origin_policy_get/set`、`origin_probes`、`origin_set`），
+- `furcdn mcp` 只包了 18 個最常用工具（v1 4 個 + 完整版網域 create/update/delete 與
+  `origin_policy_get/set`、`origin_probes`、`origin_set` + Pages 7 個），
   `furcdn account` 底下的指令尚未包成 MCP tool（`furcdn admin` 不會有，見上）。
 - `furcdn api` 目前只認 `key`/`session`/`none` 三種鑑權模式，若未來 API 出現第三種
   鑑權方式需要另外擴充；`/api/admin/**` 已在這支指令裡明確擋掉，不受此項影響。

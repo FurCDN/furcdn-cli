@@ -16,3 +16,10 @@ export function renderTable<T>(rows: T[], columns: Column<T>[]): string {
   const body = rows.map((r) => line(columns.map((c) => c.value(r))));
   return [header, sep, ...body].join("\n");
 }
+
+// 人類可讀的位元組數（Pages 的 20MB/100MB 額度都用它顯示）。
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}

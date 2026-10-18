@@ -3,7 +3,14 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import {
   ApiError,
+  activatePagesDeployment,
+  createPagesSite,
+  deletePagesSite,
+  deployPages,
+  getPagesOverview,
+  getPagesSite,
   listDomains,
+  redeemPagesBeta,
   resolveDomainId,
   purgeDomain,
   uploadSsl,
@@ -13,6 +20,7 @@ import { apiFetch } from "./http.js";
 import { resolveApiKey, resolveSessionToken } from "./config.js";
 import { HASH_KEYS, ORIGIN_STRATEGIES, PROBE_METHODS, type OriginProbesResponse } from "./originPolicy.js";
 import { applyOriginSet, buildOriginConfig, type OriginConfig, type OriginType } from "./origins.js";
+import { packDirectory } from "./pagesArchive.js";
 
 interface SessionDomain {
   id: number;
@@ -98,7 +106,7 @@ const originTypeSchema = z.enum(["http", "aliyun_oss", "aws_s3", "tencent_cos"])
 export function createMcpServer(): McpServer {
   const server = new McpServer({
     name: "furcdn",
-    version: "0.2.0",
+    version: "0.3.0",
   });
 
   server.registerTool(
@@ -389,6 +397,157 @@ export function createMcpServer(): McpServer {
           body: { origins: updated },
         });
         return jsonResult({ domain: d.domain, origins: updated });
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "furcdn_pages_list",
+    {
+      title: "列出 FurCDN Pages 站點",
+      description:
+        "列出目前帳號下的所有 Pages 靜態站點與用量（100MB 帳號額度、單站 20MB）。未解鎖內測時 unlocked=false、sites 為空。",
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        return jsonResult(await getPagesOverview());
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "furcdn_pages_create",
+    {
+      title: "建立 FurCDN Pages 站點",
+      description:
+        "建立 Pages 站點；slug 即網址前綴（https://<slug>.<Pages 網域>），長度 3–40、不可含 `--`、不可使用保留字。",
+      inputSchema: {
+        slug: z.string().min(1).describe("站點 slug，例如 my-blog"),
+        productionBranch: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("生產分支，預設 main；部署此分支會自動上線"),
+      },
+    },
+    async ({ slug, productionBranch }) => {
+      try {
+        const site = await createPagesSite(slug, productionBranch);
+        return jsonResult({ site });
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "furcdn_pages_deploy",
+    {
+      title: "部署 FurCDN Pages 站點",
+      description:
+        "把本機資料夾打包成 tar.gz 後部署到指定站點。根目錄必須有 index.html，會自動忽略 .git / node_modules / .DS_Store；部署前在本機檢查 20MB、2000 個檔案上限。",
+      inputSchema: {
+        site: z.string().min(1).describe("目標站點 slug"),
+        dir: z.string().min(1).describe("要部署的資料夾路徑（絕對或相對路徑）"),
+        branch: z.string().min(1).optional().describe("分支名稱，預設站點的生產分支"),
+        message: z.string().optional().describe("版本訊息"),
+        create: z.boolean().optional().describe("站點不存在時一併建立"),
+      },
+    },
+    async ({ site, dir, branch, message, create }) => {
+      try {
+        const packed = packDirectory(dir);
+        const result = await deployPages(site, packed.archive, {
+          branch,
+          message,
+          create,
+          via: "cli",
+        });
+        return jsonResult(result);
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "furcdn_pages_deployments",
+    {
+      title: "列出 FurCDN Pages 部署版本",
+      description:
+        "列出指定站點的部署版本（新到舊），含狀態（ready/held/rejected）、是否上線、大小與預覽網址。",
+      inputSchema: {
+        site: z.string().min(1).describe("站點 slug"),
+      },
+    },
+    async ({ site }) => {
+      try {
+        return jsonResult(await getPagesSite(site));
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "furcdn_pages_activate",
+    {
+      title: "切換 FurCDN Pages 上線版本",
+      description:
+        "把指定 deployment 設為上線版本（rollback / promote）。僅 status=ready 的版本可切換，且需通過帳號 100MB 額度檢查。",
+      inputSchema: {
+        site: z.string().min(1).describe("站點 slug"),
+        id: z.number().int().positive().describe("deployment id"),
+      },
+    },
+    async ({ site, id }) => {
+      try {
+        const activated = await activatePagesDeployment(site, id);
+        return jsonResult({ site: activated });
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "furcdn_pages_delete",
+    {
+      title: "刪除 FurCDN Pages 站點（不可逆）",
+      description:
+        "刪除整個 Pages 站點與所有部署檔案，不可逆。僅在使用者明確要求刪除時呼叫。",
+      inputSchema: {
+        site: z.string().min(1).describe("站點 slug"),
+      },
+    },
+    async ({ site }) => {
+      try {
+        const result = await deletePagesSite(site);
+        return jsonResult(result);
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "furcdn_pages_beta_redeem",
+    {
+      title: "兌換 FurCDN Pages 內測碼",
+      description:
+        "兌換 Pages 內測碼以解鎖 Pages 功能。每使用者每小時最多嘗試 10 次；已解鎖者再次兌換不會消耗內測碼。",
+      inputSchema: {
+        code: z.string().min(1).describe("內測碼，格式 PGB-XXXX-XXXX-XXXX"),
+      },
+    },
+    async ({ code }) => {
+      try {
+        return jsonResult(await redeemPagesBeta(code));
       } catch (e) {
         return toolError(e);
       }

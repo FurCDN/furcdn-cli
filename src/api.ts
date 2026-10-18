@@ -1,5 +1,5 @@
-import { apiFetch, ApiError } from "./http.js";
-import { resolveApiBase } from "./config.js";
+import { apiFetch, apiUpload, ApiError } from "./http.js";
+import { resolveApiBase, resolveApiKey } from "./config.js";
 
 export { ApiError };
 
@@ -49,4 +49,183 @@ export async function health(baseOverride?: string): Promise<string> {
   const res = await fetch(`${base}/api/health`);
   if (!res.ok) throw new ApiError(res.status, `健康檢查失敗：HTTP ${res.status}`);
   return res.text();
+}
+
+// ---- Pages ----
+
+// 兩組端點同形：有 API key 就走 /api/v1/pages（GitHub Action / CI 用），
+// 否則走 session 的 /api/pages（`furcdn login` 之後的互動使用）。
+export type PagesAuth = "key" | "session";
+
+export interface PagesDeployment {
+  id: number;
+  siteSlug: string;
+  branch: string;
+  isProduction: boolean;
+  status: "ready" | "held" | "rejected";
+  message: string | null;
+  files: number;
+  bytes: number;
+  hash: string;
+  via: string;
+  active: boolean;
+  scanVerdict: "ok" | "review";
+  scanReasons: string[];
+  url: string | null;
+  previewUrl: string;
+  createdAt: string;
+}
+
+export interface PagesSite {
+  id: number;
+  slug: string;
+  url: string;
+  productionBranch: string;
+  status: "active" | "suspended";
+  suspendedReason: string | null;
+  bytes: number;
+  activeDeployment: PagesDeployment | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PagesQuota {
+  usedBytes: number;
+  limitBytes: number;
+  perSiteLimitBytes: number;
+  siteCount: number;
+  maxSites: number;
+}
+
+export interface PagesOverview {
+  unlocked: boolean;
+  banned: boolean;
+  baseDomain: string;
+  quota: PagesQuota;
+  sites: PagesSite[];
+}
+
+export function pagesAuth(): PagesAuth {
+  return resolveApiKey() ? "key" : "session";
+}
+
+export function pagesApiPath(auth: PagesAuth, suffix: string): string {
+  return (auth === "key" ? "/api/v1/pages" : "/api/pages") + suffix;
+}
+
+export async function getPagesOverview(): Promise<PagesOverview> {
+  const auth = pagesAuth();
+  return apiFetch("GET", pagesApiPath(auth, ""), { auth });
+}
+
+export async function createPagesSite(
+  slug: string,
+  productionBranch?: string,
+): Promise<PagesSite> {
+  const auth = pagesAuth();
+  const body: Record<string, unknown> = { slug };
+  if (productionBranch) body.productionBranch = productionBranch;
+  const data = await apiFetch<{ site: PagesSite }>(
+    "POST",
+    pagesApiPath(auth, "/sites"),
+    { auth, body },
+  );
+  return data.site;
+}
+
+export async function getPagesSite(
+  slug: string,
+): Promise<{ site: PagesSite; deployments: PagesDeployment[] }> {
+  const auth = pagesAuth();
+  return apiFetch(
+    "GET",
+    pagesApiPath(auth, `/sites/${encodeURIComponent(slug)}`),
+    { auth },
+  );
+}
+
+export interface DeployPagesOptions {
+  branch?: string;
+  message?: string;
+  create?: boolean;
+  via?: string;
+}
+
+export interface DeployPagesResult {
+  deployment: PagesDeployment;
+  site: PagesSite;
+  held?: boolean;
+}
+
+export async function deployPages(
+  slug: string,
+  archive: Uint8Array,
+  opts: DeployPagesOptions = {},
+): Promise<DeployPagesResult> {
+  const auth = pagesAuth();
+  return apiUpload(
+    "POST",
+    pagesApiPath(auth, `/sites/${encodeURIComponent(slug)}/deployments`),
+    {
+      auth,
+      body: archive,
+      contentType: "application/gzip",
+      query: {
+        branch: opts.branch,
+        message: opts.message,
+        create: opts.create ? 1 : undefined,
+        via: opts.via ?? "cli",
+      },
+    },
+  );
+}
+
+export async function activatePagesDeployment(
+  slug: string,
+  id: number,
+): Promise<PagesSite> {
+  const auth = pagesAuth();
+  const data = await apiFetch<{ site: PagesSite }>(
+    "POST",
+    pagesApiPath(
+      auth,
+      `/sites/${encodeURIComponent(slug)}/deployments/${id}/activate`,
+    ),
+    { auth },
+  );
+  return data.site;
+}
+
+export async function deletePagesDeployment(
+  slug: string,
+  id: number,
+): Promise<{ ok: true }> {
+  const auth = pagesAuth();
+  return apiFetch(
+    "DELETE",
+    pagesApiPath(
+      auth,
+      `/sites/${encodeURIComponent(slug)}/deployments/${id}`,
+    ),
+    { auth },
+  );
+}
+
+export async function deletePagesSite(slug: string): Promise<{ ok: true }> {
+  const auth = pagesAuth();
+  return apiFetch(
+    "DELETE",
+    pagesApiPath(auth, `/sites/${encodeURIComponent(slug)}`),
+    { auth },
+  );
+}
+
+export async function redeemPagesBeta(
+  code: string,
+): Promise<{ unlocked: true }> {
+  const auth = pagesAuth();
+  return apiFetch("POST", pagesApiPath(auth, "/beta/redeem"), {
+    auth,
+    body: { code },
+  });
 }

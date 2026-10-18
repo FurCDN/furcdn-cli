@@ -23,13 +23,14 @@ import { registerGenericCommand } from "./commands/generic.js";
 import { registerInfoCommand } from "./commands/info.js";
 import { registerDomainCommand } from "./commands/domain.js";
 import { registerAccountCommand } from "./commands/account.js";
+import { registerPagesCommand } from "./commands/pages.js";
 
 const program = new Command();
 
 program
   .name("furcdn")
   .description("FurCDN 官方命令列工具")
-  .version("0.2.0");
+  .version("0.3.0");
 
 function fail(err: unknown): never {
   if (err instanceof ApiError) {
@@ -200,6 +201,7 @@ registerGenericCommand(program, fail);
 registerInfoCommand(program, fail);
 registerDomainCommand(program, fail);
 registerAccountCommand(program, fail);
+registerPagesCommand(program, fail);
 
 // ---- mcp ----
 program
