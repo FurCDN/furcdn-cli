@@ -150,8 +150,7 @@ furcdn domain origin set example.com --pages my-blog --backup
 
 `pages list` 顯示每個站點已綁定的網域；`pages deployments` 顯示站點網域與版本
 （不再有預覽網址）。分支等於生產分支時才自動上線，其他分支只儲存，之後用
-`furcdn pages activate <site> <id>` 上線。內容掃描判定需要人工審核時，版本會
-停在 `held`，核准前不會服務；掃描原因會一併印出。
+`furcdn pages activate <site> <id>` 上線。
 
 `pages bind` 需要叢集 id（`furcdn info clusters` 可查）；省略 `--cluster` 時會
 列出可用叢集並請你輸入 id，非互動環境則直接報錯。成功後會印出 DNS 要設定的

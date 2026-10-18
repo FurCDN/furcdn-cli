@@ -72,15 +72,12 @@ export interface PagesDeployment {
   siteSlug: string;
   branch: string;
   isProduction: boolean;
-  status: "ready" | "held" | "rejected";
   message: string | null;
   files: number;
   bytes: number;
   hash: string;
   via: string;
   active: boolean;
-  scanVerdict: "ok" | "review";
-  scanReasons: string[];
   createdAt: string;
 }
 
@@ -171,7 +168,6 @@ export interface DeployPagesOptions {
 export interface DeployPagesResult {
   deployment: PagesDeployment;
   site: PagesSite;
-  held?: boolean;
 }
 
 export async function deployPages(

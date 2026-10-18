@@ -537,7 +537,7 @@ export function createMcpServer(): McpServer {
     {
       title: "列出 FurCDN Pages 部署版本",
       description:
-        "列出指定站點的部署版本（新到舊），含狀態（ready/held/rejected）、是否上線、大小與預覽網址。",
+        "列出指定站點的部署版本（新到舊），含是否上線、大小與建立時間。",
       inputSchema: {
         site: z.string().min(1).describe("站點 slug"),
       },
@@ -600,7 +600,7 @@ export function createMcpServer(): McpServer {
     {
       title: "切換 FurCDN Pages 上線版本",
       description:
-        "把指定 deployment 設為上線版本（rollback / promote）。僅 status=ready 的版本可切換，且需通過帳號 100MB 額度檢查。",
+        "把指定 deployment 設為上線版本（rollback / promote）。需通過帳號 100MB 額度檢查。",
       inputSchema: {
         site: z.string().min(1).describe("站點 slug"),
         id: z.number().int().positive().describe("deployment id"),

@@ -60,8 +60,8 @@ async function parseErrorDetail(res: Response): Promise<ApiErrorDetail> {
   }
 }
 
-// 伺服器錯誤一律是 `{ error, code?, reasons? }`。把 code 與 reasons（例如 Pages
-// 內容掃描的判定原因）一併帶進訊息，使用者才不用自己去翻 response body。
+// 伺服器錯誤一律是 `{ error, code?, reasons? }`。把 code 與 reasons（伺服器提供的
+// 額外判定原因）一併帶進訊息，使用者才不用自己去翻 response body。
 export function formatApiError(detail: ApiErrorDetail): string {
   let message = detail.message;
   if (detail.reasons.length > 0) {

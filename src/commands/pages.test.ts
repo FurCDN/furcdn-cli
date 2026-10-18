@@ -74,15 +74,12 @@ const deploymentJson = {
   siteSlug: "demo",
   branch: "dev",
   isProduction: false,
-  status: "ready" as const,
   message: "hello",
   files: 2,
   bytes: 32,
   hash: "abc",
   via: "cli",
   active: false,
-  scanVerdict: "ok" as const,
-  scanReasons: [],
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
@@ -189,12 +186,12 @@ test("apiUpload 把伺服器的 code 與 reasons 併進錯誤訊息", async () =
   globalThis.fetch = (async () =>
     fakeResponse(
       {
-        error: "內容疑似釣魚網站，已拒絕",
-        code: "pages_content_blocked",
-        reasons: ["含密碼輸入欄位", "表單送往外部網域"],
+        error: "參數錯誤",
+        code: "pages_bad_request",
+        reasons: ["缺少 domain", "clusterId 必須是正整數"],
       },
       false,
-      422,
+      400,
     )) as typeof fetch;
   try {
     await assert.rejects(
@@ -206,10 +203,10 @@ test("apiUpload 把伺服器的 code 與 reasons 併進錯誤訊息", async () =
         }),
       (err: unknown) => {
         assert.ok(err instanceof ApiError);
-        assert.equal(err.status, 422);
-        assert.match(err.message, /含密碼輸入欄位/);
-        assert.match(err.message, /表單送往外部網域/);
-        assert.match(err.message, /pages_content_blocked/);
+        assert.equal(err.status, 400);
+        assert.match(err.message, /缺少 domain/);
+        assert.match(err.message, /clusterId 必須是正整數/);
+        assert.match(err.message, /pages_bad_request/);
         return true;
       },
     );

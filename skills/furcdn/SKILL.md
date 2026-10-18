@@ -164,9 +164,6 @@ furcdn domain origin set example.com --pages my-blog --backup
 - `furcdn domain origin set <domain> --pages <site>` makes the domain serve the
   Pages site; `--pages` and `--url` are mutually exclusive, and `--backup`
   appends it as a backup origin.
-- If content scanning flags the upload, the deployment stays `held` (not live)
-  pending admin review. Show the user the `scanReasons` and stop — don't retry
-  or tweak files to get around the check.
 - Destructive commands (`delete`, `rm-deployment`) ask for confirmation; only
   pass `-y/--yes` when the user explicitly asked to delete something.
 
@@ -180,8 +177,6 @@ furcdn domain origin set example.com --pages my-blog --backup
   code with `furcdn pages beta redeem <code>`.
 - `403 pages_banned` / `pages_site_suspended` → the account or site was
   suspended; don't try to work around it, point the user to support/dashboard.
-- `422 pages_content_blocked` → content scanning blocked the upload (phishing
-  signals); show the `reasons` list and do not retry.
 - `413 pages_quota_exceeded` / `pages_site_too_large` → show `furcdn pages
   usage` so the user can see the 100MB account quota / 20MB per-site limit.
 - `pages_domain_*` / existing domain error codes from `pages bind` → surface

@@ -13,7 +13,6 @@ import {
   listClusters,
   redeemPagesBeta,
   type PagesBoundDomain,
-  type PagesDeployment,
   type PagesSite,
 } from "../api.js";
 import { formatBytes, renderTable } from "../format.js";
@@ -22,12 +21,6 @@ import { promptConfirm, promptText } from "../prompt.js";
 
 // FurCDN Pages 指令群。鑑權由 api.ts 自動選擇：設了 API key 走 /api/v1/pages，
 // 否則用 `furcdn login` 的 session 走 /api/pages，使用者不需要自己選。
-
-const DEPLOYMENT_STATUS_LABEL: Record<PagesDeployment["status"], string> = {
-  ready: "就緒",
-  held: "待審核",
-  rejected: "已拒絕",
-};
 
 const SITE_STATUS_LABEL: Record<PagesSite["status"], string> = {
   active: "啟用",
@@ -214,21 +207,6 @@ export function registerPagesCommand(
             return console.log(JSON.stringify(result, null, 2));
           }
           const { deployment, site } = result;
-          if (result.held || deployment.status === "held") {
-            console.log(
-              `已上傳 deployment #${deployment.id}，內容需要人工審核，審核通過前不會上線。`,
-            );
-            if (deployment.scanReasons.length > 0) {
-              console.log("掃描原因：");
-              for (const reason of deployment.scanReasons) {
-                console.log(`- ${reason}`);
-              }
-            }
-            console.log(
-              `審核通過後可用 \`furcdn pages activate ${site.slug} ${deployment.id}\` 上線。`,
-            );
-            return;
-          }
           console.log(
             `已上傳 deployment #${deployment.id}（${formatBytes(deployment.bytes)}，${deployment.files} 個檔案）。`,
           );
@@ -264,11 +242,7 @@ export function registerPagesCommand(
           renderTable(data.deployments, [
             { header: "ID", value: (d) => `#${d.id}` },
             { header: "分支", value: (d) => d.branch },
-            {
-              header: "狀態",
-              value: (d) =>
-                DEPLOYMENT_STATUS_LABEL[d.status] + (d.active ? "（上線中）" : ""),
-            },
+            { header: "上線", value: (d) => (d.active ? "是" : "—") },
             { header: "大小", value: (d) => formatBytes(d.bytes) },
             { header: "檔案", value: (d) => String(d.files) },
             { header: "建立時間", value: (d) => d.createdAt },
