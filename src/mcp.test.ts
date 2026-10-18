@@ -8,7 +8,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const entry = path.join(__dirname, "index.js");
 
-test("furcdn mcp exposes the 18 expected tools over stdio", async () => {
+test("furcdn mcp exposes the 21 expected tools over stdio", async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [entry, "mcp"],
@@ -31,13 +31,16 @@ test("furcdn mcp exposes the 18 expected tools over stdio", async () => {
       "furcdn_domains_origin_set",
       "furcdn_domains_purge",
       "furcdn_domains_update",
+      "furcdn_domains_update_cluster",
       "furcdn_health",
       "furcdn_pages_activate",
       "furcdn_pages_beta_redeem",
+      "furcdn_pages_bind",
       "furcdn_pages_create",
       "furcdn_pages_delete",
       "furcdn_pages_deploy",
       "furcdn_pages_deployments",
+      "furcdn_pages_domains",
       "furcdn_pages_list",
       "furcdn_ssl_upload",
     ]);
@@ -79,6 +82,26 @@ test("origin policy/set tools expose the expected input fields", async () => {
       | undefined;
     for (const field of ["site", "dir", "branch", "message", "create"]) {
       assert.ok(pagesDeploySchema?.properties?.[field], `pages_deploy 缺少欄位 ${field}`);
+    }
+    const pagesBindSchema = byName.get("furcdn_pages_bind")?.inputSchema as
+      | { properties?: Record<string, unknown> }
+      | undefined;
+    for (const field of ["site", "domain", "clusterId"]) {
+      assert.ok(pagesBindSchema?.properties?.[field], `pages_bind 缺少欄位 ${field}`);
+    }
+    assert.ok(
+      byName.get("furcdn_pages_domains")?.inputSchema,
+      "缺少 furcdn_pages_domains",
+    );
+    assert.ok(originSetSchema?.properties?.pagesSite, "origin_set 缺少 pagesSite 欄位");
+    assert.ok(originSetSchema?.properties?.type, "origin_set 缺少 type 欄位");
+    const clusterSwitchSchema = byName.get("furcdn_domains_update_cluster")
+      ?.inputSchema as { properties?: Record<string, unknown> } | undefined;
+    for (const field of ["domain", "clusterId"]) {
+      assert.ok(
+        clusterSwitchSchema?.properties?.[field],
+        `domains_update_cluster 缺少欄位 ${field}`,
+      );
     }
   } finally {
     await client.close();

@@ -116,8 +116,9 @@ $ furcdn ssl upload example.com --cert ./fullchain.pem --key ./privkey.pem
 
 ### `furcdn pages`（靜態網站託管，內測）
 
-把一個資料夾變成靜態網站：`https://<slug>.pages.furcdn.top`。目前為內測，
-所有 Pages API 都要先兌換內測碼（未解鎖時回 `403 pages_beta_required`）。
+把一個資料夾變成靜態網站。Pages 站點本身沒有公開網址：要把**自己的網域**綁到
+站點（選一個叢集，之後可隨時切換），或把既有網域的源站改指到 Pages。目前為
+內測，所有 Pages API 都要先兌換內測碼（未解鎖時回 `403 pages_beta_required`）。
 
 ```bash
 furcdn pages beta redeem PGB-XXXX-XXXX-XXXX   # 解鎖（已解鎖者再兌換不會消耗碼）
@@ -129,8 +130,16 @@ furcdn pages deploy ./dist --site my-blog --create   # 站點不存在時一併�
 furcdn pages deployments my-blog
 furcdn pages activate my-blog 12          # rollback / promote
 furcdn pages rm-deployment my-blog 11     # 不能刪目前上線中的版本
-furcdn pages delete my-blog
 furcdn pages usage
+
+# 綁定自己的網域（建立網域 + 源站 type=pages）
+furcdn pages bind my-blog blog.example.com --cluster 3
+furcdn pages bind my-blog blog.example.com            # TTY 下互動選叢集
+furcdn pages domains my-blog                          # 已綁網域、叢集、CNAME
+
+# 既有網域改指到 Pages（不需要 --url）
+furcdn domain origin set example.com --pages my-blog
+furcdn domain origin set example.com --pages my-blog --backup
 ```
 
 鑑權自動選擇：有設定 API key（`FURCDN_API_KEY` 或 `furcdn config set-key`）就走
@@ -139,13 +148,23 @@ furcdn pages usage
 `-y/--yes` 跳過。非互動環境（CI、stdin 被關閉）下沒有 `--yes` 會直接報錯
 「非互動環境請加 --yes」，不會卡住等輸入。
 
+`pages list` 顯示每個站點已綁定的網域；`pages deployments` 顯示站點網域與版本
+（不再有預覽網址）。分支等於生產分支時才自動上線，其他分支只儲存，之後用
+`furcdn pages activate <site> <id>` 上線。內容掃描判定需要人工審核時，版本會
+停在 `held`，核准前不會服務；掃描原因會一併印出。
+
+`pages bind` 需要叢集 id（`furcdn info clusters` 可查）；省略 `--cluster` 時會
+列出可用叢集並請你輸入 id，非互動環境則直接報錯。成功後會印出 DNS 要設定的
+CNAME；之後可用 `furcdn domain update <domain> --cluster <id>` 切換叢集，或用
+`furcdn domain` 管理 SSL、WAF、快取。
+`furcdn domain origin set <domain> --pages <site>` 則是把既有網域的源站直接改指
+到 Pages 站點，`--pages` 與 `--url` 互斥，`--backup` 可附加為備援。
+
 `deploy` 會在本機先把資料夾打包成 tar.gz，並做與伺服器一致的預檢：根目錄必須有
 `index.html`、解壓後總和 ≤ 20MB、檔案數 ≤ 2000、路徑 ≤ 255 字元；自動忽略
 `.git`、`node_modules`、`.DS_Store`，也不會跟隨指到資料夾外面的符號連結。
-分支等於站點的生產分支時會自動上線，其他分支只產生預覽網址
-（`https://<slug>--<previewKey>.pages.furcdn.top`）。內容掃描判定需要人工審核時，
-版本會停在 `held`，核准前不會上線；掃描原因會一併印出。Pages 流量併入套餐的
-每月流量計算，超過額度或沒有有效套餐時站點會顯示「服務已停用」。
+Pages 流量以綁定的網域計算、併入套餐的每月流量，超過額度或沒有有效套餐時
+網域會顯示「服務已停用」。
 
 ### `furcdn health`
 
@@ -180,9 +199,9 @@ body（欄位名稱已對照後端 `route.ts` 原始碼核對過），常用欄�
 | `furcdn api <method> <path>` | 自動判斷 | 逃生艙口：對任何 route 送請求，見下方「涵蓋範圍」 |
 | `furcdn domains` / `furcdn ssl` | API Key | v1 精簡版：list / purge / ssl upload |
 | `furcdn info` | Session（`plans`/`origin-ips` 無需登入） | 叢集、公開方案、回源 IP 白名單、情報庫查詢、內建文檔 |
-| `furcdn domain` | Session | 完整版網域管理：CRUD、`origin`（回源/SNI/Host override，主源站+備援，含源站擇優 `policy`/`probes`）、`tls`（force-https/http2/ech 一覽與切換）、`ssl`（request/status/upload/delete）、`cache-rules`、`waf`（含 `ip-check`）、`dns-check`、`logs` |
+| `furcdn domain` | Session | 完整版網域管理：CRUD（`update --cluster` 切換叢集）、`origin`（回源/SNI/Host override，主源站+備援，含源站擇優 `policy`/`probes`、`--pages` 指向 Pages）、`tls`（force-https/http2/ech 一覽與切換）、`ssl`（request/status/upload/delete）、`cache-rules`、`waf`（含 `ip-check`）、`dns-check`、`logs` |
 | `furcdn account` | Session | `balance`/`topup`/`redeem`/`discount-preview`、`change-password`/`change-email`/`settings`/`audit-log`、`notify`、`oauth`、`passkeys`（僅管理既有列表）、`api-keys`、`plan`（usage/history/auto-renew/buy/renew/upgrade）、`stats`、`alipay-verify`、`tickets` |
-| `furcdn pages` | 自動（API Key 或 Session） | Pages 靜態託管：`list`/`create`/`deploy`/`deployments`/`activate`/`rm-deployment`/`delete`/`usage`/`beta redeem`/`beta status` |
+| `furcdn pages` | 自動（API Key 或 Session） | Pages 靜態託管：`list`/`create`/`deploy`/`deployments`/`activate`/`rm-deployment`/`delete`/`usage`/`domains`/`bind`/`beta redeem`/`beta status` |
 | `furcdn mcp` | 依 tool 而定 | 見下方 MCP 章節 |
 
 危險操作（刪除網域/passkey、改密碼等）一律要求 `--verify-code`（伺服器端的
@@ -251,6 +270,19 @@ furcdn domain origin probes example.com --json
 `weighted`（用 `origin.weight`）、`random`、`ip_hash`（`--hash-key client_ip|uri`）。
 完整欄位、範圍、預設值與遲滯行為見官方文檔的「源站擇優」章節。
 
+### 切換叢集
+
+```bash
+furcdn domain update example.com --cluster 2
+furcdn domain update 12 --cluster 2 --set enabled=true   # 可與其他更新欄位一起送
+```
+
+成功時會印出新叢集名稱與 `dnsTarget`（要 CNAME 到的穩定別名）。若你的 CNAME
+已經指向該別名，DNS 不需要改。Aliyun 未設定時回應會帶
+`dnsNote: "aliyun_not_configured"`：叢集已切換，但別名沒有自動更新，需要手動把
+CNAME 指到 `dnsTarget`。切換失敗（方案不含叢集、需實名、Aliyun 呼叫失敗等）會
+原樣顯示伺服器錯誤；Aliyun 失敗時伺服器已自動還原原叢集，可稍後重試。
+
 ## 作為 MCP Server 使用
 
 `furcdn mcp` 會以 stdio 啟動一個 [MCP](https://modelcontextprotocol.io) server，
@@ -289,15 +321,18 @@ claude mcp add furcdn -- node /path/to/furcdn-cli/dist/index.js mcp
 | `furcdn_ssl_upload` | 上傳並啟用自訂 SSL 憑證 | `domain`、`cert`（PEM）、`key`（PEM） | API Key |
 | `furcdn_domains_create` | 建立新網域（完整版） | `domain`、`clusterId`、`origin?`、`originType?` | Session（需先 `furcdn login`） |
 | `furcdn_domains_update` | 更新網域簡單欄位 | `domain`、`fields`（key/value） | Session |
+| `furcdn_domains_update_cluster` | 切換網域叢集（回傳 dnsTarget/dnsNote） | `domain`、`clusterId` | Session |
 | `furcdn_domains_delete` | 刪除網域（不可逆） | `domain`、`verifyCode` | Session |
 | `furcdn_domains_origin_policy_get` | 查詢源站擇優設定 | `domain` | Session |
 | `furcdn_domains_origin_policy_set` | 設定源站擇優（只帶要改的欄位；`reset` 重置） | `domain`、`strategy?`、`probeMethod?`、`probeFallback?`、`probeIntervalSec?`、`probeTimeoutMs?`、`probeCount?`、`probePort?`、`probePath?`、`probeAlways?`、`scoreWindow?`、`lossPenaltyMs?`、`maxLatencyMs?`、`switchThresholdMs?`、`minHoldSec?`、`hashKey?`、`retryStatuses?`、`retryOnError?`、`maxAttempts?`、`reset?` | Session |
 | `furcdn_domains_origin_probes` | 查詢各節點源站探測結果 | `domain` | Session |
-| `furcdn_domains_origin_set` | 新增/設定單一源站（含權重/備用/探測欄位） | `domain`、`url`、`type?`、`sni?`、`hostOverride?`、`backup?`、`weight?`、`probeHost?`、`latencyBiasMs?`、`probeDisabled?` | Session |
+| `furcdn_domains_origin_set` | 新增/設定單一源站（含權重/備用/探測欄位；可指向 Pages 站點） | `domain`、`url?`、`pagesSite?`、`type?`、`sni?`、`hostOverride?`、`backup?`、`weight?`、`probeHost?`、`latencyBiasMs?`、`probeDisabled?` | Session |
 | `furcdn_pages_list` | 列出 Pages 站點與用量 | 無 | API Key 或 Session（自動） |
 | `furcdn_pages_create` | 建立 Pages 站點 | `slug`、`productionBranch?` | 同上 |
 | `furcdn_pages_deploy` | 打包本機資料夾並部署 | `site`、`dir`、`branch?`、`message?`、`create?` | 同上 |
 | `furcdn_pages_deployments` | 列出站點部署版本 | `site` | 同上 |
+| `furcdn_pages_domains` | 列出站點綁定的網域 | `site` | 同上 |
+| `furcdn_pages_bind` | 綁定網域到站點（建立網域、源站 type=pages） | `site`、`domain`、`clusterId` | 同上 |
 | `furcdn_pages_activate` | 切換上線版本 | `site`、`id` | 同上 |
 | `furcdn_pages_delete` | 刪除站點（不可逆） | `site` | 同上 |
 | `furcdn_pages_beta_redeem` | 兌換 Pages 內測碼 | `code` | 同上 |
@@ -350,7 +385,7 @@ cp -r /path/to/furcdn-cli/skills/furcdn .claude/skills/furcdn
   `furcdn info`、`furcdn domain`（完整版 CRUD、origin 與源站擇優 policy/probes、
   tls、cache-rules、waf、ssl、dns-check、logs）、`furcdn account`（帳務、安全、通知、oauth、passkeys
   列表/刪除、api-keys、plan、stats、alipay 實名認證、tickets）、
-  `furcdn pages`（靜態網站部署、版本管理、用量與內測碼）、
+  `furcdn pages`（靜態網站部署、版本管理、網域綁定、用量與內測碼）、
   `furcdn login`/`logout`/`whoami`。
 - **完全沒有專屬指令，但可用 `furcdn api <method> <path> --data <json>` 呼叫**：任何
   上面沒覆蓋到的、或未來新增的一般使用者 `/api/**` route（`/api/admin/**` 被明確
@@ -374,8 +409,8 @@ cp -r /path/to/furcdn-cli/skills/furcdn .claude/skills/furcdn
 
 **尚未做，但技術上可行、之後可以補**（TODO）：
 
-- `furcdn mcp` 只包了 18 個最常用工具（v1 4 個 + 完整版網域 create/update/delete 與
-  `origin_policy_get/set`、`origin_probes`、`origin_set` + Pages 7 個），
+- `furcdn mcp` 只包了 21 個最常用工具（v1 4 個 + 完整版網域 create/update/delete、
+  `update_cluster` 與 `origin_policy_get/set`、`origin_probes`、`origin_set` + Pages 9 個），
   `furcdn account` 底下的指令尚未包成 MCP tool（`furcdn admin` 不會有，見上）。
 - `furcdn api` 目前只認 `key`/`session`/`none` 三種鑑權模式，若未來 API 出現第三種
   鑑權方式需要另外擴充；`/api/admin/**` 已在這支指令裡明確擋掉，不受此項影響。

@@ -106,12 +106,29 @@ furcdn domain origin set example.com --url http://origin2.example --backup --wei
 - Don't switch to `latency` unless the user asks — `failover` (the default) is
   the safest for a single primary + backups setup.
 
+### Switch a domain's cluster
+
+```bash
+furcdn domain update example.com --cluster 2
+furcdn domain update 12 --cluster 2 --set enabled=true   # combine with other fields
+```
+
+Prints the new cluster name and `dnsTarget` (the stable alias to CNAME to). If
+the user's CNAME already points at that alias, no DNS change is needed. When
+Aliyun is not configured the response carries
+`dnsNote: "aliyun_not_configured"`: the cluster did switch, but the alias was not
+updated — tell the user to point the CNAME at `dnsTarget` manually. Same-cluster
+requests are a no-op (`dnsUpdated:false`). A `502` means the Aliyun alias update
+failed and the server rolled the cluster back; it is safe to retry later.
+
 ### Deploy a static site (FurCDN Pages, beta)
 
-FurCDN Pages hosts a static folder at `https://<slug>.pages.furcdn.top`.
-It is in beta and gated: every Pages API returns `403 pages_beta_required`
-until the account redeems a beta code. The user must supply the code — never
-guess one or reuse someone else's.
+FurCDN Pages hosts a static folder, but a Pages site has **no public hostname
+of its own**: you bind the user's own domain to it (and pick a cluster), or
+point an existing domain's origin at the Pages site. It is in beta and gated:
+every Pages API returns `403 pages_beta_required` until the account redeems a
+beta code. The user must supply the code — never guess one or reuse someone
+else's.
 
 ```bash
 furcdn pages beta status
@@ -121,14 +138,32 @@ furcdn pages deploy ./dist --site my-blog --branch main --message "deploy"
 furcdn pages deployments my-blog
 furcdn pages activate my-blog <id>        # rollback / promote
 furcdn pages usage
+
+# Bind a domain to the site (creates the domain with origin type=pages)
+furcdn pages bind my-blog blog.example.com --cluster <id>
+furcdn pages bind my-blog blog.example.com   # TTY: interactive cluster picker
+furcdn pages domains my-blog                 # bound domains + CNAME targets
+
+# Point an existing domain's origin at the Pages site (no --url)
+furcdn domain origin set example.com --pages my-blog
+furcdn domain origin set example.com --pages my-blog --backup
 ```
 
 - The folder root must contain `index.html`. The CLI packs a tar.gz and
   enforces 20MB total / 2000 files / 255-char paths locally before uploading.
   `.git`, `node_modules` and `.DS_Store` are ignored; symlinks pointing outside
   the folder are rejected.
-- Deploying the site's production branch goes live automatically; any other
-  branch only produces a preview URL (`https://<slug>--<key>.<base>`).
+- Only the site's production branch goes live automatically; other branches are
+  stored but not served — use `furcdn pages activate <site> <id>` to promote.
+- `pages bind` requires a cluster id (`furcdn info clusters` lists them). If
+  `--cluster` is omitted the CLI prompts interactively; in a non-interactive
+  environment it errors instead of hanging. After success, tell the user the
+  exact CNAME to create (the command prints it) and that the domain can be
+  managed with `furcdn domain` (SSL, WAF, cache) — switching clusters later is
+  `furcdn domain update <domain> --cluster <id>`.
+- `furcdn domain origin set <domain> --pages <site>` makes the domain serve the
+  Pages site; `--pages` and `--url` are mutually exclusive, and `--backup`
+  appends it as a backup origin.
 - If content scanning flags the upload, the deployment stays `held` (not live)
   pending admin review. Show the user the `scanReasons` and stop — don't retry
   or tweak files to get around the check.
@@ -149,6 +184,12 @@ furcdn pages usage
   signals); show the `reasons` list and do not retry.
 - `413 pages_quota_exceeded` / `pages_site_too_large` → show `furcdn pages
   usage` so the user can see the 100MB account quota / 20MB per-site limit.
+- `pages_domain_*` / existing domain error codes from `pages bind` → surface
+  the server message as-is (domain already exists, plan domain limit, cluster
+  not allowed, …); don't retry blindly.
+- Cluster switch: `403 您的套餐未包含此叢集` / `403 …需要實名認證` → tell the
+  user to upgrade or complete real-name verification; `409` → concurrent change,
+  re-read the domain and retry; `502` → server rolled back, retry later.
 - Network errors → report the failure; don't silently retry indefinitely.
 
 ## Notes

@@ -59,12 +59,12 @@ function firstTarEntry(tar: Buffer): { name: string; size: number } {
 const siteJson = {
   id: 7,
   slug: "demo",
-  url: "https://demo.pages.furcdn.top",
   productionBranch: "main",
   status: "active" as const,
   suspendedReason: null,
   bytes: 32,
   activeDeployment: null,
+  domains: [],
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
@@ -83,9 +83,16 @@ const deploymentJson = {
   active: false,
   scanVerdict: "ok" as const,
   scanReasons: [],
-  url: null,
-  previewUrl: "https://demo--abc.pages.furcdn.top",
   createdAt: "2026-01-01T00:00:00.000Z",
+};
+
+const boundDomainJson = {
+  id: 21,
+  domain: "blog.example.com",
+  clusterId: 3,
+  clusterName: "香港",
+  cname: "cname.example.net",
+  enabled: true,
 };
 
 test("pages deploy（API key）送出正確路徑、headers 與 gzip tar body", async () => {
@@ -293,4 +300,75 @@ test("非互動環境（stdin 關閉）下 delete / rm-deployment 直接報錯�
     );
     assert.equal(result.stdout, "", `${args.join(" ")} 不應輸出純文字到 stdout`);
   }
+});
+
+test("pages bind --cluster 送出 domain/clusterId 並印出 CNAME 指示", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  let capturedInit: RequestInit | undefined;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    capturedUrl = url;
+    capturedInit = init;
+    return fakeResponse(
+      { domain: boundDomainJson, cname: boundDomainJson.cname, site: siteJson },
+      true,
+      201,
+    );
+  }) as typeof fetch;
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => {
+    logs.push(args.map(String).join(" "));
+  };
+
+  try {
+    const program = buildProgram((e: unknown): never => {
+      throw e;
+    });
+    await program.parseAsync([
+      "node",
+      "furcdn",
+      "pages",
+      "bind",
+      "demo",
+      "blog.example.com",
+      "--cluster",
+      "3",
+    ]);
+
+    assert.equal(
+      capturedUrl,
+      "https://api.test/api/v1/pages/sites/demo/domains",
+    );
+    assert.equal(capturedInit?.method, "POST");
+    const headers = capturedInit?.headers as Record<string, string>;
+    assert.equal(headers.Authorization, "Bearer test-key");
+    assert.deepEqual(JSON.parse(capturedInit?.body as string), {
+      domain: "blog.example.com",
+      clusterId: 3,
+    });
+    const output = logs.join("\n");
+    assert.match(output, /blog\.example\.com/);
+    assert.match(output, /CNAME：blog\.example\.com → cname\.example\.net/);
+    assert.match(output, /furcdn domain/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+  }
+});
+
+test("pages bind 省略 --cluster 且非互動時直接報錯，不打 API", () => {
+  const entry = fileURLToPath(new URL("../index.js", import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    [entry, "pages", "bind", "demo", "blog.example.com"],
+    {
+      env: { ...process.env },
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
+      timeout: 10_000,
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /非互動環境請指定 --cluster <id>/);
 });

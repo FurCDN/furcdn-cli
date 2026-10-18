@@ -57,6 +57,16 @@ export async function health(baseOverride?: string): Promise<string> {
 // 否則走 session 的 /api/pages（`furcdn login` 之後的互動使用）。
 export type PagesAuth = "key" | "session";
 
+/** 綁定到 Pages 站點的網域（源站 type=pages 的既有 Domain）。 */
+export interface PagesBoundDomain {
+  id: number;
+  domain: string;
+  clusterId: number;
+  clusterName: string;
+  cname: string;
+  enabled: boolean;
+}
+
 export interface PagesDeployment {
   id: number;
   siteSlug: string;
@@ -71,20 +81,19 @@ export interface PagesDeployment {
   active: boolean;
   scanVerdict: "ok" | "review";
   scanReasons: string[];
-  url: string | null;
-  previewUrl: string;
   createdAt: string;
 }
 
 export interface PagesSite {
   id: number;
   slug: string;
-  url: string;
   productionBranch: string;
   status: "active" | "suspended";
   suspendedReason: string | null;
   bytes: number;
   activeDeployment: PagesDeployment | null;
+  /** 源站含此站點的網域；列表頁可能為空陣列，詳情必填。 */
+  domains: PagesBoundDomain[];
   createdAt: string;
   updatedAt: string;
 }
@@ -100,9 +109,17 @@ export interface PagesQuota {
 export interface PagesOverview {
   unlocked: boolean;
   banned: boolean;
-  baseDomain: string;
   quota: PagesQuota;
   sites: PagesSite[];
+}
+
+/** GET /api/clusters 的項目（session 鑑權，依方案過濾）。 */
+export interface Cluster {
+  id: number;
+  name: string;
+  cname: string;
+  region: string;
+  requireRealName: boolean;
 }
 
 export function pagesAuth(): PagesAuth {
@@ -228,4 +245,44 @@ export async function redeemPagesBeta(
     auth,
     body: { code },
   });
+}
+
+export async function getPagesDomains(
+  slug: string,
+): Promise<{ domains: PagesBoundDomain[] }> {
+  const auth = pagesAuth();
+  return apiFetch(
+    "GET",
+    pagesApiPath(auth, `/sites/${encodeURIComponent(slug)}/domains`),
+    { auth },
+  );
+}
+
+export interface BindPagesDomainResult {
+  domain: PagesBoundDomain;
+  cname: string;
+  site: PagesSite;
+}
+
+export async function bindPagesDomain(
+  slug: string,
+  domain: string,
+  clusterId: number,
+): Promise<BindPagesDomainResult> {
+  const auth = pagesAuth();
+  return apiFetch(
+    "POST",
+    pagesApiPath(auth, `/sites/${encodeURIComponent(slug)}/domains`),
+    { auth, body: { domain, clusterId } },
+  );
+}
+
+// GET /api/clusters 只有 session 版（v1 沒有對應端點），互動選叢集時使用。
+export async function listClusters(): Promise<Cluster[]> {
+  const data = await apiFetch<{ clusters: Cluster[] }>(
+    "GET",
+    "/api/clusters",
+    { auth: "session" },
+  );
+  return data.clusters;
 }

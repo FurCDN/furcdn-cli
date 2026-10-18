@@ -2,19 +2,23 @@ import type { Command } from "commander";
 import {
   activatePagesDeployment,
   ApiError,
+  bindPagesDomain,
   createPagesSite,
   deletePagesDeployment,
   deletePagesSite,
   deployPages,
+  getPagesDomains,
   getPagesOverview,
   getPagesSite,
+  listClusters,
   redeemPagesBeta,
+  type PagesBoundDomain,
   type PagesDeployment,
   type PagesSite,
 } from "../api.js";
 import { formatBytes, renderTable } from "../format.js";
 import { packDirectory } from "../pagesArchive.js";
-import { promptConfirm } from "../prompt.js";
+import { promptConfirm, promptText } from "../prompt.js";
 
 // FurCDN Pages 指令群。鑑權由 api.ts 自動選擇：設了 API key 走 /api/v1/pages，
 // 否則用 `furcdn login` 的 session 走 /api/pages，使用者不需要自己選。
@@ -34,6 +38,47 @@ function parseDeploymentId(raw: string): number {
   const id = Number(raw);
   if (!Number.isInteger(id) || id <= 0) {
     throw new ApiError(0, `deployment id 必須是正整數：${raw}`);
+  }
+  return id;
+}
+
+function formatDomains(domains: PagesBoundDomain[]): string {
+  return domains.length > 0 ? domains.map((d) => d.domain).join(", ") : "—";
+}
+
+function parseClusterId(raw: string): number {
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new ApiError(0, `叢集 ID 必須是正整數：${raw}`);
+  }
+  return id;
+}
+
+// --cluster 省略時的互動選擇。非 TTY 直接報錯，絕不讓 readline 卡住等輸入。
+async function selectCluster(): Promise<number> {
+  if (!process.stdin.isTTY) {
+    throw new ApiError(
+      0,
+      "非互動環境請指定 --cluster <id>（可用 `furcdn info clusters` 查詢）",
+    );
+  }
+  const clusters = await listClusters();
+  if (clusters.length === 0) {
+    throw new ApiError(0, "目前方案沒有可用叢集");
+  }
+  console.log(
+    renderTable(clusters, [
+      { header: "ID", value: (c) => String(c.id) },
+      { header: "名稱", value: (c) => c.name },
+      { header: "CNAME", value: (c) => c.cname },
+      { header: "地區", value: (c) => c.region },
+      { header: "需實名", value: (c) => (c.requireRealName ? "是" : "否") },
+    ]),
+  );
+  const answer = await promptText("請輸入叢集 ID: ");
+  const id = Number(answer);
+  if (!Number.isInteger(id) || !clusters.some((c) => c.id === id)) {
+    throw new ApiError(0, `叢集 ID 無效：${answer || "(空白)"}`);
   }
   return id;
 }
@@ -65,7 +110,7 @@ export function registerPagesCommand(
   const pages = program
     .command("pages")
     .description(
-      "FurCDN Pages 靜態網站託管（內測）：部署資料夾、管理版本、查看用量",
+      "FurCDN Pages 靜態網站託管（內測）：部署資料夾、綁定網域、管理版本、查看用量",
     );
 
   pages
@@ -93,7 +138,7 @@ export function registerPagesCommand(
               value: (s) =>
                 s.activeDeployment ? `#${s.activeDeployment.id}` : "—",
             },
-            { header: "網址", value: (s) => s.url },
+            { header: "已綁網域", value: (s) => formatDomains(s.domains) },
           ]),
         );
         const q = overview.quota;
@@ -107,7 +152,7 @@ export function registerPagesCommand(
 
   pages
     .command("create <slug>")
-    .description("建立新的 Pages 站點（slug 即網址前綴：https://<slug>.<Pages 網域>）")
+    .description("建立新的 Pages 站點（slug 只用於 CLI/API 辨識；對外服務請用 pages bind 綁定自己的網域）")
     .option("--production-branch <branch>", "生產分支，預設 main")
     .option("--json", "輸出 JSON")
     .action(
@@ -119,9 +164,11 @@ export function registerPagesCommand(
           const site = await createPagesSite(slug, opts.productionBranch);
           if (opts.json) return console.log(JSON.stringify({ site }, null, 2));
           console.log(`已建立 Pages 站點 ${site.slug}。`);
-          console.log(`網址：${site.url}`);
           console.log(
             `生產分支：${site.productionBranch}（推送該分支會自動上線）`,
+          );
+          console.log(
+            `綁定網域：furcdn pages bind ${site.slug} <domain> --cluster <id>`,
           );
         } catch (e) {
           fail(e);
@@ -177,19 +224,23 @@ export function registerPagesCommand(
                 console.log(`- ${reason}`);
               }
             }
-            console.log(`預覽網址：${deployment.previewUrl}`);
+            console.log(
+              `審核通過後可用 \`furcdn pages activate ${site.slug} ${deployment.id}\` 上線。`,
+            );
             return;
           }
           console.log(
             `已上傳 deployment #${deployment.id}（${formatBytes(deployment.bytes)}，${deployment.files} 個檔案）。`,
           );
           if (deployment.active) {
-            console.log(`網址：${deployment.url ?? site.url}`);
+            console.log(`已上線。綁定網域：${formatDomains(site.domains)}`);
           } else {
             console.log(
-              `分支 ${deployment.branch} 不是生產分支 ${site.productionBranch}，僅供預覽。`,
+              `分支 ${deployment.branch} 不是生產分支 ${site.productionBranch}，僅儲存、未上線。`,
             );
-            console.log(`預覽網址：${deployment.previewUrl}`);
+            console.log(
+              `要上線請執行：furcdn pages activate ${site.slug} ${deployment.id}`,
+            );
           }
         } catch (e) {
           fail(e);
@@ -206,8 +257,9 @@ export function registerPagesCommand(
         const data = await getPagesSite(slug);
         if (opts.json) return console.log(JSON.stringify(data, null, 2));
         console.log(
-          `站點 ${data.site.slug}：${data.site.url}（${SITE_STATUS_LABEL[data.site.status]}）`,
+          `站點 ${data.site.slug}（${SITE_STATUS_LABEL[data.site.status]}）`,
         );
+        console.log(`已綁網域：${formatDomains(data.site.domains)}`);
         console.log(
           renderTable(data.deployments, [
             { header: "ID", value: (d) => `#${d.id}` },
@@ -220,13 +272,78 @@ export function registerPagesCommand(
             { header: "大小", value: (d) => formatBytes(d.bytes) },
             { header: "檔案", value: (d) => String(d.files) },
             { header: "建立時間", value: (d) => d.createdAt },
-            { header: "預覽網址", value: (d) => d.previewUrl },
           ]),
         );
       } catch (e) {
         fail(e);
       }
     });
+
+  pages
+    .command("domains <slug>")
+    .description("列出綁定到站點的網域（源站 type=pages 的既有網域）")
+    .option("--json", "輸出 JSON")
+    .action(async (slug: string, opts: { json?: boolean }) => {
+      try {
+        const data = await getPagesDomains(slug);
+        if (opts.json) return console.log(JSON.stringify(data, null, 2));
+        console.log(`站點 ${slug} 綁定的網域：`);
+        console.log(
+          renderTable(data.domains, [
+            { header: "ID", value: (d) => String(d.id) },
+            { header: "網域", value: (d) => d.domain },
+            {
+              header: "叢集",
+              value: (d) => `${d.clusterName}（#${d.clusterId}）`,
+            },
+            { header: "CNAME", value: (d) => d.cname },
+            { header: "狀態", value: (d) => (d.enabled ? "啟用" : "停用") },
+          ]),
+        );
+        if (data.domains.length === 0) {
+          console.log(
+            `\n尚未綁定網域。可用 \`furcdn pages bind ${slug} <domain> --cluster <id>\` 綁定。`,
+          );
+        }
+      } catch (e) {
+        fail(e);
+      }
+    });
+
+  pages
+    .command("bind <slug> <domain>")
+    .description(
+      "把網域綁定到 Pages 站點（建立網域、源站設為 type=pages；叢集可隨時用 furcdn domain 切換）",
+    )
+    .option("--cluster <id>", "叢集 ID（見 furcdn info clusters）；省略時互動選擇")
+    .option("--json", "輸出 JSON")
+    .action(
+      async (
+        slug: string,
+        domain: string,
+        opts: { cluster?: string; json?: boolean },
+      ) => {
+        try {
+          const clusterId =
+            opts.cluster === undefined
+              ? await selectCluster()
+              : parseClusterId(opts.cluster);
+          const result = await bindPagesDomain(slug, domain, clusterId);
+          if (opts.json) return console.log(JSON.stringify(result, null, 2));
+          console.log(
+            `已將 ${result.domain.domain} 綁定到 Pages 站點 ${slug}（叢集 ${result.domain.clusterName} #${result.domain.clusterId}）。`,
+          );
+          console.log(
+            `請在 DNS 設定 CNAME：${result.domain.domain} → ${result.cname}`,
+          );
+          console.log(
+            `之後可用 \`furcdn domain update ${result.domain.domain} --cluster <id>\` 切換叢集；也可用 \`furcdn domain\` 管理 SSL、WAF、快取。`,
+          );
+        } catch (e) {
+          fail(e);
+        }
+      },
+    );
 
   pages
     .command("activate <slug> <id>")
@@ -238,7 +355,7 @@ export function registerPagesCommand(
         const site = await activatePagesDeployment(slug, id);
         if (opts.json) return console.log(JSON.stringify({ site }, null, 2));
         console.log(`已將 ${site.slug} 的上線版本切換為 #${id}。`);
-        console.log(`網址：${site.url}`);
+        console.log(`已綁網域：${formatDomains(site.domains)}`);
       } catch (e) {
         fail(e);
       }
@@ -357,7 +474,6 @@ export function registerPagesCommand(
         if (opts.json) return console.log(JSON.stringify(overview, null, 2));
         console.log(`解鎖：${overview.unlocked ? "是" : "否"}`);
         console.log(`封禁：${overview.banned ? "是" : "否"}`);
-        console.log(`Pages 網域：${overview.baseDomain}`);
         if (!overview.unlocked) {
           console.log(
             "兌換方式：`furcdn pages beta redeem <內測碼>`（內測碼請向管理員索取）",

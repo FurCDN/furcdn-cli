@@ -43,6 +43,19 @@ interface DomainListItem {
 }
 
 // GET /api/domains 回傳的完整欄位（節錄，只列這幾支指令需要的部分）。
+interface DomainUpdateResult {
+  domain?: {
+    id: number;
+    clusterId?: number;
+    cluster?: { id: number; name: string; cname: string };
+    /** 使用者要 CNAME 到的穩定別名（Aliyun 未設定時退回叢集 cname）。 */
+    dnsTarget?: string;
+    dnsUpdated?: boolean;
+    /** "aliyun_not_configured"：叢集已切換，但 DNS 別名沒有動。 */
+    dnsNote?: string;
+  };
+}
+
 interface DomainDetail extends DomainListItem {
   origins: OriginConfig[];
   /** master 存的是 normalize 後的完整物件；舊 master 可能沒有這個欄位。 */
@@ -244,8 +257,9 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
   const update = domain
     .command("update <idOrName>")
     .description(
-      "更新網域設定：常用欄位用 --set key=value（可重複），複雜欄位（origins/originHeaders/cacheKeyHeaders）用 --data；源站擇優 originPolicy 可用 --origin-strategy 等旗標、--set originPolicy.<欄位>=值 或 --data",
+      "更新網域設定：常用欄位用 --set key=value（可重複），複雜欄位（origins/originHeaders/cacheKeyHeaders）用 --data；切換叢集用 --cluster <id>；源站擇優 originPolicy 可用 --origin-strategy 等旗標、--set originPolicy.<欄位>=值 或 --data",
     )
+    .option("--cluster <id>", "切換叢集（含 DNS 別名更新；可與其他更新欄位同時使用）")
     .option(
       "--set <kv>",
       "重複使用：key=value，例如 --set enabled=true --set originPolicy.strategy=latency",
@@ -258,23 +272,56 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
   update.action(
     async (
       idOrName: string,
-      opts: { set: string[]; data?: string; json?: boolean; [key: string]: unknown },
+      opts: {
+        set: string[];
+        data?: string;
+        cluster?: string;
+        json?: boolean;
+        [key: string]: unknown;
+      },
     ) => {
       try {
         const id = await resolveDomainId(idOrName);
         const setBody = parseSetArgs(opts.set);
         const dataBody = parseDataArg(opts.data);
         const body: Record<string, unknown> = { ...setBody, ...dataBody };
+        if (opts.cluster !== undefined) {
+          body.clusterId = coerceInt("--cluster", opts.cluster, 1, 2147483647);
+        }
         const policy = mergeOriginPolicy(opts, setBody, dataBody);
         if (Object.keys(body).length === 0 && Object.keys(policy).length === 0) {
           throw new ApiError(0, "至少要用 --set、--data 或 policy 旗標指定一個要更新的欄位");
         }
         if (Object.keys(policy).length > 0) body.originPolicy = policy;
-        const result = await apiFetch("PUT", `/api/domains/${id}`, {
-          auth: "session",
-          body,
-        });
+        const result = await apiFetch<DomainUpdateResult>(
+          "PUT",
+          `/api/domains/${id}`,
+          { auth: "session", body },
+        );
         if (opts.json) return console.log(JSON.stringify(result, null, 2));
+        const info = result.domain;
+        if (opts.cluster !== undefined && info) {
+          // 同叢集 no-op：dnsUpdated=false 且沒有 dnsNote。
+          if (info.dnsUpdated === false && !info.dnsNote) {
+            console.log(`網域 #${id} 已在叢集 #${info.clusterId ?? opts.cluster}，未變更。`);
+            return;
+          }
+          console.log(
+            `已將網域 #${id} 切換到叢集 ${info.cluster?.name ?? ""}（#${info.clusterId ?? opts.cluster}）。`,
+          );
+          if (info.dnsTarget) {
+            console.log(`CNAME 目標：${info.dnsTarget}`);
+            console.log(
+              `若你的 CNAME 已指向此別名（${info.dnsTarget}）則 DNS 免改。`,
+            );
+          }
+          if (info.dnsNote === "aliyun_not_configured") {
+            console.log(
+              "注意：Aliyun 未設定，DNS 別名沒有自動更新；請手動把 CNAME 指到上面的目標。",
+            );
+          }
+          return;
+        }
         console.log(`已更新網域 #${id}。`);
       } catch (e) {
         fail(e);
@@ -384,10 +431,15 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
   origin
     .command("set <idOrName>")
     .description(
-      "新增/設定一個 origin：預設取代主源站（index 0），加 --backup 則附加為新的備援（並標記 backup=true）",
+      "新增/設定一個 origin：預設取代主源站（index 0），加 --backup 則附加為新的備援（並標記 backup=true）；也可用 --pages 指向 Pages 站點",
     )
-    .requiredOption("--url <url>", "回源位址，例如 http://1.2.3.4:8080")
-    .option("--type <type>", "http/aliyun_oss/aws_s3/tencent_cos，預設 http", "http")
+    .option("--url <url>", "回源位址，例如 http://1.2.3.4:8080（使用 --pages 時不需要）")
+    .option("--pages <site>", "把源站指向 FurCDN Pages 站點（slug）；與 --url 互斥")
+    .option(
+      "--type <type>",
+      "http/aliyun_oss/aws_s3/tencent_cos/pages，預設 http",
+      "http",
+    )
     .option("--sni <host>", "自訂 TLS SNI（留空 = 自動）")
     .option("--host-override <host>", "自訂回源 Host header（留空 = 自動）")
     .option("--backup", "附加為備援（並標記 backup=true），而非取代主源站")
@@ -400,7 +452,8 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
       async (
         idOrName: string,
         opts: {
-          url: string;
+          url?: string;
+          pages?: string;
           type: string;
           sni?: string;
           hostOverride?: string;
@@ -412,10 +465,23 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
         },
       ) => {
         try {
+          if (opts.pages && opts.url) {
+            throw new ApiError(0, "--pages 與 --url 只能擇一");
+          }
+          if (!opts.pages && !opts.url) {
+            throw new ApiError(
+              0,
+              "需要 --url，或改用 --pages <site> 指向 Pages 站點",
+            );
+          }
+          if (!opts.pages && opts.type === "pages") {
+            throw new ApiError(0, "--type pages 時請用 --pages <site> 指定站點");
+          }
           const { id, name, origins } = await fetchDomainOrigins(idOrName);
           const next = buildOriginConfig({
             url: opts.url,
-            type: opts.type as OriginType,
+            type: opts.pages ? "pages" : (opts.type as OriginType),
+            pagesSite: opts.pages,
             sni: opts.sni,
             hostOverride: opts.hostOverride,
             backup: opts.backup,
@@ -432,11 +498,19 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
             auth: "session",
             body: { origins: updated },
           });
-          console.log(
-            opts.backup
-              ? `已為 ${name} 新增備援回源 ${opts.url}（index ${updated.length - 1}）。`
-              : `已將 ${name} 的主源站設為 ${opts.url}。`,
-          );
+          if (opts.pages) {
+            console.log(
+              opts.backup
+                ? `已為 ${name} 新增備援 Pages 源站 ${opts.pages}（index ${updated.length - 1}）。`
+                : `已將 ${name} 的主源站指向 Pages 站點 ${opts.pages}。`,
+            );
+          } else {
+            console.log(
+              opts.backup
+                ? `已為 ${name} 新增備援回源 ${opts.url}（index ${updated.length - 1}）。`
+                : `已將 ${name} 的主源站設為 ${opts.url}。`,
+            );
+          }
         } catch (e) {
           fail(e);
         }

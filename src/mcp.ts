@@ -4,9 +4,11 @@ import { z } from "zod";
 import {
   ApiError,
   activatePagesDeployment,
+  bindPagesDomain,
   createPagesSite,
   deletePagesSite,
   deployPages,
+  getPagesDomains,
   getPagesOverview,
   getPagesSite,
   listDomains,
@@ -101,12 +103,18 @@ const originPolicyShape = {
   maxAttempts: z.number().int().min(0).max(10).optional().describe("單請求最多嘗試幾個源站，0＝不限"),
 };
 
-const originTypeSchema = z.enum(["http", "aliyun_oss", "aws_s3", "tencent_cos"]);
+const originTypeSchema = z.enum([
+  "http",
+  "aliyun_oss",
+  "aws_s3",
+  "tencent_cos",
+  "pages",
+]);
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({
     name: "furcdn",
-    version: "0.3.0",
+    version: "0.4.0",
   });
 
   server.registerTool(
@@ -237,6 +245,35 @@ export function createMcpServer(): McpServer {
   );
 
   server.registerTool(
+    "furcdn_domains_update_cluster",
+    {
+      title: "切換 FurCDN 網域叢集（session 鑑權）",
+      description:
+        "把網域切換到指定叢集（PUT /api/domains/:id，body `{clusterId}`）。回應含新叢集（cluster）、dnsTarget、dnsUpdated、dnsNote；若 CNAME 已指向 dnsTarget 則 DNS 免改，dnsNote=aliyun_not_configured 代表叢集已切換但別名沒有自動更新。",
+      inputSchema: {
+        domain: z.string().min(1).describe("網域的 id（數字字串）或完整網域名稱"),
+        clusterId: z
+          .number()
+          .int()
+          .positive()
+          .describe("目標叢集 ID（可用 furcdn info clusters 查詢）"),
+      },
+    },
+    async ({ domain, clusterId }) => {
+      try {
+        const id = await resolveSessionDomainId(domain);
+        const result = await apiFetch("PUT", `/api/domains/${id}`, {
+          auth: "session",
+          body: { clusterId },
+        });
+        return jsonResult(result);
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
     "furcdn_domains_delete",
     {
       title: "刪除 FurCDN 網域（完整版，session 鑑權，不可逆）",
@@ -352,10 +389,19 @@ export function createMcpServer(): McpServer {
     {
       title: "設定 FurCDN 網域的單一源站（session 鑑權）",
       description:
-        "新增/設定一個 origin：預設取代主源站（index 0），backup=true 則附加為新的備援。可一併設定 weight/backup/probeHost/latencyBiasMs/probeDisabled 等擇優欄位。",
+        "新增/設定一個 origin：預設取代主源站（index 0），backup=true 則附加為新的備援。可一併設定 weight/backup/probeHost/latencyBiasMs/probeDisabled 等擇優欄位。type=pages 時改用 pagesSite 指向 Pages 站點。",
       inputSchema: {
         domain: z.string().min(1).describe("網域的 id（數字字串）或完整網域名稱"),
-        url: z.string().min(1).describe("回源位址，例如 http://1.2.3.4:8080"),
+        url: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("回源位址，例如 http://1.2.3.4:8080（pages 源站不需要）"),
+        pagesSite: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Pages 站點 slug；指定時 type 自動為 pages，與 url 互斥"),
         type: originTypeSchema.optional().describe("回源類型，預設 http"),
         sni: z.string().optional().describe("自訂 TLS SNI（留空＝自動）"),
         hostOverride: z.string().optional().describe("自訂回源 Host header（留空＝自動）"),
@@ -369,6 +415,7 @@ export function createMcpServer(): McpServer {
     async ({
       domain,
       url,
+      pagesSite,
       type,
       sni,
       hostOverride,
@@ -379,10 +426,20 @@ export function createMcpServer(): McpServer {
       probeDisabled,
     }) => {
       try {
+        if (pagesSite && url) {
+          throw new ApiError(0, "url 與 pagesSite 只能擇一");
+        }
+        if (!pagesSite && !url) {
+          throw new ApiError(0, "需要 url，或 pagesSite 指向 Pages 站點");
+        }
+        if (!pagesSite && type === "pages") {
+          throw new ApiError(0, "type=pages 時需要 pagesSite");
+        }
         const d = await fetchSessionDomain(domain);
         const next = buildOriginConfig({
           url,
-          type: type as OriginType | undefined,
+          type: pagesSite ? "pages" : (type as OriginType | undefined),
+          pagesSite,
           sni,
           hostOverride,
           backup,
@@ -488,6 +545,50 @@ export function createMcpServer(): McpServer {
     async ({ site }) => {
       try {
         return jsonResult(await getPagesSite(site));
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "furcdn_pages_domains",
+    {
+      title: "列出 FurCDN Pages 站點綁定的網域",
+      description:
+        "列出源站設為該 Pages 站點（type=pages）的網域，含叢集、CNAME 與啟用狀態。",
+      inputSchema: {
+        site: z.string().min(1).describe("站點 slug"),
+      },
+    },
+    async ({ site }) => {
+      try {
+        return jsonResult(await getPagesDomains(site));
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "furcdn_pages_bind",
+    {
+      title: "綁定網域到 FurCDN Pages 站點",
+      description:
+        "建立一個新網域並把源站設為指定 Pages 站點（type=pages），沿用既有方案網域數/叢集權限/驗證/自動 SSL 規則。回傳綁定結果、要設定的 CNAME 與站點。",
+      inputSchema: {
+        site: z.string().min(1).describe("站點 slug"),
+        domain: z.string().min(1).describe("要綁定的網域，例如 blog.example.com"),
+        clusterId: z
+          .number()
+          .int()
+          .positive()
+          .describe("叢集 ID（可用 `furcdn info clusters` 查詢）"),
+      },
+    },
+    async ({ site, domain, clusterId }) => {
+      try {
+        return jsonResult(await bindPagesDomain(site, domain, clusterId));
       } catch (e) {
         return toolError(e);
       }

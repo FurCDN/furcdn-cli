@@ -284,3 +284,202 @@ test("renderOriginProbes reports an explicit message when there is no data", () 
   assert.match(renderOriginProbes([]), /尚無探測資料/);
   assert.match(renderOriginProbes(undefined), /尚無探測資料/);
 });
+
+// domain origin set --pages：不需要 --url，送出的 origin 必須是 {type:"pages", pagesSite}。
+function stubDomainWithOrigins() {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    if (!init?.method || init.method === "GET") {
+      return fakeResponse({
+        domains: [
+          {
+            id: 5,
+            domain: "example.com",
+            enabled: true,
+            clusterId: 1,
+            cacheEnabled: true,
+            wafEnabled: true,
+            sslEnabled: true,
+            origins: [{ url: "http://origin.example", type: "http" }],
+            sslAutoRenew: true,
+            forceHttps: false,
+            http2Enabled: true,
+            echEnabled: false,
+          },
+        ],
+      });
+    }
+    return fakeResponse({ ok: true });
+  }) as typeof fetch;
+  return calls;
+}
+
+test("domain origin set --pages 送出 type=pages / pagesSite", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = stubDomainWithOrigins();
+  try {
+    const program = buildDomainProgram((e: unknown): never => {
+      throw e;
+    });
+    await program.parseAsync([
+      "node",
+      "furcdn",
+      "domain",
+      "origin",
+      "set",
+      "example.com",
+      "--pages",
+      "my-site",
+    ]);
+    const put = calls.find((c) => c.init?.method === "PUT");
+    assert.ok(put, "應該要送出 PUT /api/domains/5");
+    assert.match(put.url, /\/api\/domains\/5$/);
+    const body = JSON.parse(put.init?.body as string) as { origins: unknown[] };
+    assert.deepEqual(body.origins, [{ type: "pages", pagesSite: "my-site" }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("domain origin set --pages --backup 附加 Pages 備援源站", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = stubDomainWithOrigins();
+  try {
+    const program = buildDomainProgram((e: unknown): never => {
+      throw e;
+    });
+    await program.parseAsync([
+      "node",
+      "furcdn",
+      "domain",
+      "origin",
+      "set",
+      "example.com",
+      "--pages",
+      "my-site",
+      "--backup",
+    ]);
+    const put = calls.find((c) => c.init?.method === "PUT");
+    assert.ok(put);
+    const body = JSON.parse(put.init?.body as string) as { origins: unknown[] };
+    assert.equal(body.origins.length, 2);
+    assert.deepEqual(body.origins[1], {
+      type: "pages",
+      pagesSite: "my-site",
+      backup: true,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("domain origin set 拒絕 --pages 與 --url 併用，且不打 API", async () => {
+  const originalFetch = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = (async () => {
+    called = true;
+    return fakeResponse({ ok: true });
+  }) as typeof fetch;
+  try {
+    const program = buildDomainProgram((e: unknown): never => {
+      throw e;
+    });
+    await assert.rejects(
+      () =>
+        program.parseAsync([
+          "node",
+          "furcdn",
+          "domain",
+          "origin",
+          "set",
+          "example.com",
+          "--pages",
+          "my-site",
+          "--url",
+          "http://origin.example",
+        ]),
+      /只能擇一/,
+    );
+    assert.equal(called, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// domain update --cluster：切換叢集後要印出新叢集、dnsTarget 與 DNS 免改提醒。
+async function captureClusterUpdate(
+  args: string[],
+  result: unknown,
+): Promise<{ body: Record<string, unknown>; logs: string[] }> {
+  const originalFetch = globalThis.fetch;
+  let captured = "";
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    if (init?.body) captured = init.body as string;
+    return fakeResponse(result);
+  }) as typeof fetch;
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (...a: unknown[]) => {
+    logs.push(a.map(String).join(" "));
+  };
+  try {
+    const program = buildDomainProgram((e: unknown): never => {
+      throw e;
+    });
+    await program.parseAsync(["node", "furcdn", "domain", "update", ...args]);
+    return { body: JSON.parse(captured) as Record<string, unknown>, logs };
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+  }
+}
+
+test("domain update --cluster 送出 clusterId 並印出新叢集與 dnsTarget", async () => {
+  const { body, logs } = await captureClusterUpdate(["5", "--cluster", "2"], {
+    domain: {
+      id: 5,
+      clusterId: 2,
+      cluster: { id: 2, name: "港日 2", cname: "c2.cdn.example.com" },
+      dnsTarget: "example.com.furcdn.top",
+      dnsUpdated: true,
+    },
+  });
+  assert.deepEqual(body, { clusterId: 2 });
+  const out = logs.join("\n");
+  assert.match(out, /港日 2/);
+  assert.match(out, /CNAME 目標：example\.com\.furcdn\.top/);
+  assert.match(out, /DNS 免改/);
+});
+
+test("domain update --cluster 可與 --set 併用", async () => {
+  const { body } = await captureClusterUpdate(
+    ["5", "--cluster", "2", "--set", "enabled=false"],
+    { domain: { id: 5, clusterId: 2, dnsUpdated: true } },
+  );
+  assert.deepEqual(body, { enabled: false, clusterId: 2 });
+});
+
+test("domain update --cluster 在 Aliyun 未設定時提醒手動更新 CNAME", async () => {
+  const { logs } = await captureClusterUpdate(["5", "--cluster", "2"], {
+    domain: {
+      id: 5,
+      clusterId: 2,
+      cluster: { id: 2, name: "港日 2", cname: "c2.cdn.example.com" },
+      dnsTarget: "c2.cdn.example.com",
+      dnsUpdated: false,
+      dnsNote: "aliyun_not_configured",
+    },
+  });
+  const out = logs.join("\n");
+  assert.match(out, /Aliyun 未設定/);
+  assert.match(out, /手動/);
+  assert.doesNotMatch(out, /未變更/);
+});
+
+test("domain update --cluster 同叢集 no-op 顯示未變更", async () => {
+  const { logs } = await captureClusterUpdate(["5", "--cluster", "2"], {
+    domain: { id: 5, clusterId: 2, dnsUpdated: false },
+  });
+  assert.match(logs.join("\n"), /未變更/);
+});

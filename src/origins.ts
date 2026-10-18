@@ -2,11 +2,21 @@
 // 新欄位（weight/backup/probeHost/latencyBiasMs/probeDisabled）由 master 的
 // validateOrigins 保留；CLI 這邊只負責組裝與顯示。
 
-export type OriginType = "http" | "aliyun_oss" | "aws_s3" | "tencent_cos";
+export type OriginType =
+  | "http"
+  | "aliyun_oss"
+  | "aws_s3"
+  | "tencent_cos"
+  | "pages";
 
 export interface OriginConfig {
-  url: string;
+  /** pages 源站的 url 由伺服器產生，輸入時只需要 pagesSite。 */
+  url?: string;
   type: OriginType;
+  /** pages 源站：站點 slug（送出時伺服器會正規化成 pagesSiteId）。 */
+  pagesSite?: string;
+  /** 伺服器回傳的 pages 源站站點 id。 */
+  pagesSiteId?: number;
   sni?: string | null;
   hostOverride?: string | null;
   ossAccessKeyId?: string | null;
@@ -24,8 +34,9 @@ export interface OriginConfig {
 }
 
 export interface OriginSetInput {
-  url: string;
+  url?: string;
   type?: OriginType;
+  pagesSite?: string;
   sni?: string;
   hostOverride?: string;
   backup?: boolean;
@@ -36,7 +47,16 @@ export interface OriginSetInput {
 }
 
 export function buildOriginConfig(input: OriginSetInput): OriginConfig {
-  const next: OriginConfig = { url: input.url, type: input.type ?? "http" };
+  const isPages = input.type === "pages" || !!input.pagesSite;
+  if (isPages && !input.pagesSite) {
+    throw new Error("pages 源站需要 pagesSite（站點 slug）");
+  }
+  if (!isPages && !input.url) {
+    throw new Error("非 pages 源站需要 url");
+  }
+  const next: OriginConfig = isPages
+    ? { type: "pages", pagesSite: input.pagesSite }
+    : { url: input.url, type: input.type ?? "http" };
   if (input.sni) next.sni = input.sni;
   if (input.hostOverride) next.hostOverride = input.hostOverride;
   if (input.backup) next.backup = true;
@@ -73,8 +93,17 @@ export function renderOriginLine(o: OriginConfig, i: number): string {
     flags.push(`latency-bias=${o.latencyBiasMs}`);
   }
   if (o.probeDisabled) flags.push("probe=off");
+  // 伺服器回傳的 pages origin 會帶正規化後的 url（pages://<siteId>）；
+  // 使用者剛輸入、還沒 PUT 的則只有 pagesSite（slug）。
+  const label =
+    o.type === "pages"
+      ? (o.url ??
+        (o.pagesSite
+          ? `pages://${o.pagesSite}`
+          : `pages://#${o.pagesSiteId ?? "?"}`))
+      : (o.url ?? "");
   return (
-    `[${i}]${i === 0 ? " (主源站)" : " (備援)"} ${o.url}  type=${o.type}` +
+    `[${i}]${i === 0 ? " (主源站)" : " (備援)"} ${label}  type=${o.type}` +
     (o.sni ? `  sni=${o.sni}` : "") +
     (o.hostOverride ? `  host=${o.hostOverride}` : "") +
     (flags.length ? `  ${flags.join("  ")}` : "")

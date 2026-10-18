@@ -30,7 +30,7 @@ const program = new Command();
 program
   .name("furcdn")
   .description("FurCDN 官方命令列工具")
-  .version("0.3.0");
+  .version("0.4.0");
 
 function fail(err: unknown): never {
   if (err instanceof ApiError) {
