@@ -16,7 +16,7 @@ import {
   uploadSsl,
   health,
 } from "./api.js";
-import { renderTable } from "./format.js";
+import { formatPurgeResult, renderTable } from "./format.js";
 import { runMcpServer } from "./mcp.js";
 import { login, logout, whoami } from "./commands/auth.js";
 import { registerGenericCommand } from "./commands/generic.js";
@@ -132,15 +132,7 @@ domains
           console.log(JSON.stringify(r, null, 2));
           return;
         }
-        if (r.mode === "selective") {
-          console.log(
-            `已對 ${d.name} 發送選擇性清除快取：${r.success}/${r.total} 個節點成功，共刪除 ${r.removed ?? 0} 筆快取。`,
-          );
-          return;
-        }
-        console.log(
-          `已對 ${d.name} 發送清除快取：${r.success}/${r.total} 個節點成功。`,
-        );
+        console.log(formatPurgeResult(d.name, r));
       } catch (e) {
         fail(e);
       }

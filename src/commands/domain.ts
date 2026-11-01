@@ -2,7 +2,7 @@ import fs from "node:fs";
 import type { Command } from "commander";
 import { buildPurgeBody, type PurgeResult } from "../api.js";
 import { apiFetch, ApiError } from "../http.js";
-import { renderTable } from "../format.js";
+import { formatPurgeResult, renderTable } from "../format.js";
 import { promptConfirm } from "../prompt.js";
 import {
   buildOriginPolicyFromFlags,
@@ -394,16 +394,7 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
             }),
           });
           if (opts.json) return console.log(JSON.stringify(result, null, 2));
-          const message =
-            result.message ??
-            (result.mode === "selective" ? "已選擇性刷新快取" : "已刷新快取");
-          if (result.mode === "selective") {
-            console.log(
-              `${message}（共刪除 ${result.removed ?? 0} 筆快取，${result.success}/${result.total} 個節點成功）`,
-            );
-            return;
-          }
-          console.log(message);
+          console.log(formatPurgeResult(idOrName, result));
         } catch (e) {
           fail(e);
         }

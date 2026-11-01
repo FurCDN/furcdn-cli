@@ -106,7 +106,7 @@ $ furcdn domains purge example.com
 
 # 單一 URL（query string 算在比對內）
 $ furcdn domains purge example.com --url 'https://example.com/a.css?v=1'
-已對 example.com 發送選擇性清除快取：3/3 個節點成功，共刪除 12 筆快取。
+已對 example.com 發送選擇性清除快取：3/3 個節點成功，共刪除 12 筆節點快取項目（各節點快取筆數總和，同一 URL 在不同節點會分別計入，不是不重複 URL 數）。
 
 # 多筆：選項可重複帶，也可以一次給多個值
 $ furcdn domains purge example.com --url /b.js --url /c.js
@@ -133,16 +133,29 @@ $ furcdn domains purge example.com --all
 
 一次最多 100 筆（`--url` + `--prefix` + `--pattern` 合計），單筆最長 2048 字元，
 空字串會被拒絕。`--json` 一律輸出伺服器原始回應，例如
-`{"ok":true,"mode":"selective","total":5,"success":5,"removed":12}`：`total` 是
-正在服務該網域的線上節點數、`success` 是有回應的節點數、`removed`（只有選擇性
-刷新才有）是各節點刪除的快取筆數總和——同一個 URL 快取在 3 個節點就算 3 筆。
+`{"ok":true,"mode":"selective","total":5,"success":5,"removed":12}`。人類可讀
+輸出固定只有一行摘要，同一組筆數只印一次：
+
+- `total`：正在服務該網域的線上節點數。
+- `success`：有回應且確認成功的節點數；失敗的節點不算在內。
+- `removed`（只有選擇性刷新才有）：**成功節點**回報刪除的快取項目數總和，
+  不是不重複 URL 數——同一個 URL 的快取在 3 個節點就算 3 筆。
+
+因為 `removed` 只涵蓋成功節點，部分節點失敗時 CLI 會寫成「成功節點回報刪除
+N 筆……失敗節點的刪除筆數未計入，實際總數可能更多」；`success` 為 0（或伺服器
+沒回報 `removed`／回報非法值）時一律顯示「刪除筆數不明」，不會用 0 假裝成已知
+總數。`total` 為 0 時顯示「未清除……目前沒有線上節點」，不會宣稱刷新成功；
+伺服器回報 `ok:false` 時顯示「清除……失敗」，即使 `success` 等於 `total` 也
+不宣稱成功。
 
 速率限制：整站刷新同帳號 5 分鐘內最多 10 次；選擇性刷新 5 分鐘內最多 60 次，
 超過都會回傳 429 並提示稍後再試。
 
 `furcdn domain purge <id-or-name>`（session 版）選項與行為完全相同，回應另外帶
-`message` 字串。另外要記得：快取規則（TTL／不快取）只在節點回源時套用，改規則
-不會動到已經快取的內容，要讓規則變更立即生效得刷新對應的內容。
+`message` 字串；CLI 完全不採用它（可能已含筆數、也可能因語系而格式各異），
+一律只用 `ok`/`mode`/`total`/`success`/`removed` 產生同一份摘要，所以筆數只會
+出現一次。另外要記得：快取規則（TTL／不快取）只在節點回源時套用，改規則不會
+動到已經快取的內容，要讓規則變更立即生效得刷新對應的內容。
 
 ### `furcdn ssl upload <id-or-name> --cert <path> --key <path>`
 

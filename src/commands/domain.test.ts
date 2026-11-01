@@ -561,7 +561,7 @@ test("domain purge 把 --url/--prefix/--pattern 組成選擇性 body", async () 
     patterns: ["/assets/*.js"],
   });
   const out = logs.join("\n");
-  assert.match(out, /已刷新快取/);
+  assert.match(out, /已對 5 發送選擇性清除快取/);
   assert.match(out, /12 筆/);
 });
 
@@ -605,4 +605,97 @@ test("domain purge --json 輸出原始伺服器 JSON", async () => {
   const payload = { ok: true, mode: "selective", total: 2, success: 2, removed: 4, message: "ok" };
   const { logs } = await capturePurge(["5", "--url", "/a.css", "--json"], payload);
   assert.deepEqual(JSON.parse(logs.join("\n")), payload);
+});
+
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
+test("domain purge 不理會任何語系的伺服器 message，筆數只印一次", async () => {
+  const { logs } = await capturePurge(["5", "--url", "/a.css"], {
+    ok: true,
+    mode: "selective",
+    total: 3,
+    success: 3,
+    removed: 12,
+    message: "Deleted 12 entries across 3/3 nodes",
+  });
+  const out = logs.join("\n");
+  assert.equal(occurrences(out, "12"), 1);
+  assert.equal(occurrences(out, "3/3"), 1);
+  assert.doesNotMatch(out, /Deleted/);
+  assert.match(out, /^已對 5 發送選擇性清除快取：/);
+});
+
+test("domain purge 在 ok:false 時不宣稱成功", async () => {
+  const { logs } = await capturePurge(["5", "--url", "/a.css"], {
+    ok: false,
+    mode: "selective",
+    total: 3,
+    success: 3,
+    removed: 12,
+    message: "ok",
+  });
+  const out = logs.join("\n");
+  assert.equal(out, "清除 5 的快取失敗：伺服器回報 ok=false。");
+  assert.doesNotMatch(out, /成功|3\/3|12 筆/);
+});
+
+test("domain purge 缺 removed 時顯示不明，不補 0", async () => {
+  const { logs } = await capturePurge(["5", "--url", "/a.css"], {
+    ok: true,
+    mode: "selective",
+    total: 3,
+    success: 3,
+    message: "已刷新快取",
+  });
+  const out = logs.join("\n");
+  assert.match(out, /刪除筆數不明（伺服器未回報 removed）/);
+  assert.doesNotMatch(out, /共刪除 \d+ 筆/);
+  assert.doesNotMatch(out, /0 筆/);
+});
+
+test("domain purge 部分節點失敗時只報成功節點的刪除數", async () => {
+  const { logs } = await capturePurge(["5", "--url", "/a.css"], {
+    ok: true,
+    mode: "selective",
+    total: 3,
+    success: 1,
+    removed: 4,
+    message: "已刷新快取",
+  });
+  const out = logs.join("\n");
+  assert.match(out, /1\/3 個節點成功/);
+  assert.match(out, /2 個節點失敗/);
+  assert.match(out, /成功節點回報刪除 4 筆/);
+  assert.match(out, /2 個失敗節點的刪除筆數未計入，實際總數可能更多/);
+  assert.doesNotMatch(out, /3\/3/);
+});
+
+test("domain purge 沒有線上節點時不宣稱成功", async () => {
+  const { logs } = await capturePurge(["5"], {
+    ok: true,
+    mode: "all",
+    total: 0,
+    success: 0,
+    message: "已刷新快取",
+  });
+  const out = logs.join("\n");
+  assert.equal(out, "未清除 5 的快取：目前沒有線上節點。");
+  assert.doesNotMatch(out, /個節點成功/);
+});
+
+test("domain purge success=0 不會把 removed 當成已知的 0", async () => {
+  const { logs } = await capturePurge(["5", "--url", "/a.css"], {
+    ok: true,
+    mode: "selective",
+    total: 3,
+    success: 0,
+    removed: 0,
+    message: "已刷新快取",
+  });
+  const out = logs.join("\n");
+  assert.match(out, /0\/3 個節點成功，全部失敗/);
+  assert.match(out, /刪除筆數不明（沒有節點確認成功/);
+  assert.doesNotMatch(out, /0 筆/);
 });

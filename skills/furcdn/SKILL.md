@@ -90,15 +90,22 @@ the user to wait a few minutes before retrying — don't loop retrying it
 yourself.
 
 The output/`--json` response reports `mode` (`all` or `selective`), `total`
-(online nodes serving the domain), `success` (nodes that acknowledged) and,
-for selective purges, `removed` (cache entries deleted, summed across nodes —
-the same URL cached on 3 nodes counts 3).
+(online nodes serving the domain), `success` (nodes that acknowledged and
+confirmed success — failed nodes are not counted) and, for selective purges,
+`removed` (cache entries deleted, summed across the successful nodes only —
+the same URL cached on 3 nodes counts 3; it is not a unique-URL count). When
+`removed` is missing or invalid, or when no node confirmed success, the CLI
+prints "刪除筆數不明" rather than assuming 0. With `total` 0 it says no nodes
+are online instead of claiming success.
 
 Cache rules (TTL / "do not cache") are only applied when a node fetches from
 origin, so changing a rule never touches content that is already cached. If
 the user expects a rule change to take effect immediately, purge the affected
 content. `furcdn domain purge` (session auth) takes the same options and also
-returns a `message` string.
+returns a `message` string; the CLI ignores that string and builds its summary
+from `ok`/`mode`/`total`/`success`/`removed` only, so counts never repeat
+regardless of the server locale. `ok:false` is reported as a failure even when
+`success` equals `total`.
 
 Over MCP the same operation is the `furcdn_domains_purge` tool: `domain` plus
 the optional `all`, `urls`, `prefixes` and `patterns` fields (string arrays,

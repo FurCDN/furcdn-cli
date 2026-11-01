@@ -45,16 +45,24 @@ export interface PurgeOptions {
 }
 
 export interface PurgeResult {
+  /** 伺服器整體結果；false 時即使節點統計看起來成功，也不能宣稱成功。 */
   ok: boolean;
   /** all＝整站刷新；selective＝選擇性刷新。 */
   mode: "all" | "selective";
   /** 正在服務該網域的線上節點數。 */
   total: number;
-  /** 有回應的節點數。 */
+  /** 有回應且確認成功的節點數；失敗的節點不算在內。 */
   success: number;
-  /** 選擇性刷新才有：各節點刪除的快取筆數總和。 */
+  /**
+   * 選擇性刷新才有：成功節點回報刪除的快取筆數總和（不是不重複 URL 數）。
+   * 只涵蓋成功節點，失敗節點刪了多少未計入；伺服器也可能不回報這個欄位，
+   * 呼叫端必須把缺值視為「不明」，不可補 0。
+   */
   removed?: number;
-  /** session 版（/api/domains/**）回應才有。 */
+  /**
+   * session 版（/api/domains/**）回應才有。僅供 `--json` 原樣輸出；人類可讀
+   * 摘要一律由結構化欄位產生，不採用這個字串（可能含筆數或因語系而異）。
+   */
   message?: string;
 }
 
