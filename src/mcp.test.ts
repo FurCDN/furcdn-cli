@@ -103,6 +103,23 @@ test("origin policy/set tools expose the expected input fields", async () => {
         `domains_update_cluster 缺少欄位 ${field}`,
       );
     }
+    // 選擇性刷新：urls/prefixes/patterns 是字串陣列，all 是布林。
+    const purgeSchema = byName.get("furcdn_domains_purge")?.inputSchema as
+      | {
+          properties?: Record<string, { type?: string; items?: { type?: string } }>;
+        }
+      | undefined;
+    for (const field of ["urls", "prefixes", "patterns"]) {
+      const prop = purgeSchema?.properties?.[field];
+      assert.ok(prop, `domains_purge 缺少欄位 ${field}`);
+      assert.equal(prop.type, "array", `${field} 應為陣列`);
+      assert.equal(prop.items?.type, "string", `${field} 的元素應為字串`);
+    }
+    assert.equal(
+      purgeSchema?.properties?.all?.type,
+      "boolean",
+      "domains_purge 的 all 應為布林",
+    );
   } finally {
     await client.close();
   }

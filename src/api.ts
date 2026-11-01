@@ -27,10 +27,116 @@ export async function resolveDomainId(idOrName: string): Promise<Domain> {
   throw new ApiError(404, `找不到網域：${idOrName}`);
 }
 
+// ---- 刷新快取（purge）----
+//
+// 不帶 opts＝舊行為：完全不出 body，伺服器當成整站刷新。伺服器把
+// 「沒有 body / 空 body / { all: true }」都視為整站刷新，所以既有呼叫端
+// 不需要改任何一行。
+
+export interface PurgeOptions {
+  /** 整站刷新；不可與 urls/prefixes/patterns 併用（伺服器會回 400）。 */
+  all?: boolean;
+  /** 精確 URL：完整 URL（host 需等於網域）或 / 開頭路徑；query string 算在比對內。 */
+  urls?: string[];
+  /** URL 路徑前綴（忽略 query string），例如 /static/。 */
+  prefixes?: string[];
+  /** URL 路徑 glob（忽略 query string，需以 / 開頭，`*` 可跨 /），例如 /assets/*.js。 */
+  patterns?: string[];
+}
+
+export interface PurgeResult {
+  ok: boolean;
+  /** all＝整站刷新；selective＝選擇性刷新。 */
+  mode: "all" | "selective";
+  /** 正在服務該網域的線上節點數。 */
+  total: number;
+  /** 有回應的節點數。 */
+  success: number;
+  /** 選擇性刷新才有：各節點刪除的快取筆數總和。 */
+  removed?: number;
+  /** session 版（/api/domains/**）回應才有。 */
+  message?: string;
+}
+
+/** urls + prefixes + patterns 的總筆數上限（伺服器端限制，先在本機擋掉）。 */
+export const PURGE_MAX_ENTRIES = 100;
+/** 單筆 selector 的長度上限。 */
+export const PURGE_MAX_ENTRY_LENGTH = 2048;
+
+export interface PurgeRequestBody {
+  all?: true;
+  urls?: string[];
+  prefixes?: string[];
+  patterns?: string[];
+}
+
+function validatePurgeEntries(field: string, entries: string[]): void {
+  for (const entry of entries) {
+    if (typeof entry !== "string" || entry.length === 0) {
+      throw new ApiError(0, `${field} 不可包含空字串`);
+    }
+    if (entry.length > PURGE_MAX_ENTRY_LENGTH) {
+      throw new ApiError(
+        0,
+        `${field} 的每一筆長度不可超過 ${PURGE_MAX_ENTRY_LENGTH} 字元（收到 ${entry.length}）`,
+      );
+    }
+  }
+}
+
+// 純函式（不碰網路）：把 PurgeOptions 轉成要送的 body。
+// 回傳 undefined 代表「不送 body」＝整站刷新（舊行為）；驗證失敗一律丟
+// ApiError(0, ...)，跟其他指令的本機前置檢查一致（真正的權威驗證仍在伺服器）。
+export function buildPurgeBody(opts?: PurgeOptions): PurgeRequestBody | undefined {
+  if (!opts) return undefined;
+
+  const selectors: PurgeRequestBody = {};
+  let total = 0;
+  for (const field of ["urls", "prefixes", "patterns"] as const) {
+    const entries = opts[field];
+    if (entries === undefined) continue;
+    if (!Array.isArray(entries)) {
+      throw new ApiError(0, `${field} 必須是字串陣列`);
+    }
+    validatePurgeEntries(field, entries);
+    if (entries.length === 0) continue;
+    selectors[field] = entries;
+    total += entries.length;
+  }
+
+  if (opts.all === true) {
+    if (total > 0) {
+      throw new ApiError(0, "all=true 不能與 urls/prefixes/patterns 併用，請擇一");
+    }
+    return { all: true };
+  }
+
+  if (total === 0) {
+    if (opts.all === false) {
+      throw new ApiError(0, "all=false 需搭配 urls、prefixes 或 patterns 其中一個");
+    }
+    // 什麼都沒指定＝空 body＝整站刷新。
+    return undefined;
+  }
+
+  if (total > PURGE_MAX_ENTRIES) {
+    throw new ApiError(
+      0,
+      `一次最多 ${PURGE_MAX_ENTRIES} 筆（urls + prefixes + patterns 合計，收到 ${total} 筆）`,
+    );
+  }
+
+  return selectors;
+}
+
 export async function purgeDomain(
   id: number,
-): Promise<{ ok: boolean; total: number; success: number }> {
-  return apiFetch("POST", `/api/v1/domains/${id}/purge`, { auth: "key" });
+  opts?: PurgeOptions,
+): Promise<PurgeResult> {
+  return apiFetch("POST", `/api/v1/domains/${id}/purge`, {
+    auth: "key",
+    body: buildPurgeBody(opts),
+  });
 }
 
 export async function uploadSsl(

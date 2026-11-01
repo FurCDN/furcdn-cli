@@ -30,7 +30,7 @@ const program = new Command();
 program
   .name("furcdn")
   .description("FurCDN 官方命令列工具")
-  .version("0.4.0");
+  .version("0.5.0");
 
 function fail(err: unknown): never {
   if (err instanceof ApiError) {
@@ -101,23 +101,51 @@ domains
 
 domains
   .command("purge <idOrName>")
-  .description("清除該網域在所屬叢集所有節點的快取")
+  .description(
+    "清除該網域在所屬叢集所有節點的快取（不帶選項＝整站刷新；可用 --url/--prefix/--pattern 只刷新符合的內容）",
+  )
+  .option("--all", "整站刷新（等同不帶任何選項；不可與 --url/--prefix/--pattern 併用）")
+  .option("--url <url...>", "只刷新這些 URL（完整 URL 或 / 開頭路徑，可重複／多值）")
+  .option("--prefix <prefix...>", "只刷新路徑前綴符合的內容，例如 /static/")
+  .option("--pattern <glob...>", "只刷新路徑 glob 符合的內容，例如 '/assets/*.js'")
   .option("--json", "輸出 JSON")
-  .action(async (idOrName: string, opts: { json?: boolean }) => {
-    try {
-      const d = await resolveDomainId(idOrName);
-      const r = await purgeDomain(d.id);
-      if (opts.json) {
-        console.log(JSON.stringify(r, null, 2));
-        return;
+  .action(
+    async (
+      idOrName: string,
+      opts: {
+        json?: boolean;
+        all?: boolean;
+        url?: string[];
+        prefix?: string[];
+        pattern?: string[];
+      },
+    ) => {
+      try {
+        const d = await resolveDomainId(idOrName);
+        const r = await purgeDomain(d.id, {
+          all: opts.all,
+          urls: opts.url,
+          prefixes: opts.prefix,
+          patterns: opts.pattern,
+        });
+        if (opts.json) {
+          console.log(JSON.stringify(r, null, 2));
+          return;
+        }
+        if (r.mode === "selective") {
+          console.log(
+            `已對 ${d.name} 發送選擇性清除快取：${r.success}/${r.total} 個節點成功，共刪除 ${r.removed ?? 0} 筆快取。`,
+          );
+          return;
+        }
+        console.log(
+          `已對 ${d.name} 發送清除快取：${r.success}/${r.total} 個節點成功。`,
+        );
+      } catch (e) {
+        fail(e);
       }
-      console.log(
-        `已對 ${d.name} 發送清除快取：${r.success}/${r.total} 個節點成功。`,
-      );
-    } catch (e) {
-      fail(e);
-    }
-  });
+    },
+  );
 
 // ---- ssl ----
 const ssl = program.command("ssl").description("管理自訂 SSL 憑證");

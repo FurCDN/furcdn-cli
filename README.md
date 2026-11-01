@@ -97,13 +97,52 @@ ID  網域                狀態
 ### `furcdn domains purge <id-or-name>`
 
 清除該網域在所屬叢集所有節點的 L1+L2 快取（等同 dashboard「立即刷新緩存」）。
+不帶任何選項＝整站刷新（舊行為完全不變）；也可以只刷新符合條件的內容：
 
 ```bash
+# 整站刷新
 $ furcdn domains purge example.com
 已對 example.com 發送清除快取：3/3 個節點成功。
+
+# 單一 URL（query string 算在比對內）
+$ furcdn domains purge example.com --url 'https://example.com/a.css?v=1'
+已對 example.com 發送選擇性清除快取：3/3 個節點成功，共刪除 12 筆快取。
+
+# 多筆：選項可重複帶，也可以一次給多個值
+$ furcdn domains purge example.com --url /b.js --url /c.js
+
+# 路徑前綴
+$ furcdn domains purge example.com --prefix /static/
+
+# glob（`*` 可跨 `/`）
+$ furcdn domains purge example.com --pattern '/assets/*.js'
+
+# 三種條件可併用（聯集，符合任一條就刷新）
+$ furcdn domains purge example.com --prefix /static/ --pattern '/img/*' --url /index.html
+
+# 明確指定整站刷新
+$ furcdn domains purge example.com --all
 ```
 
-有速率限制：同帳號 5 分鐘內最多 10 次，超過會回傳 429 並提示稍後再試。
+| 選項 | 說明 |
+| --- | --- |
+| `--url <url...>` | 精確 URL：完整 URL（host 需等於該網域，否則 400）或 `/` 開頭路徑。query string 算在比對內（網域開啟 ignoreQueryString 時忽略），同一 URL 的 Vary / GET / HEAD 各版本會一起清掉 |
+| `--prefix <prefix...>` | URL 路徑前綴（忽略 query string）：`/static/` 會清掉 `/static/a.js`、`/static/x/y.css` |
+| `--pattern <glob...>` | URL 路徑 glob（忽略 query string，需以 `/` 開頭，`*` 可匹配任意字元含 `/`），例如 `/assets/*.js`、`/img/*` |
+| `--all` | 整站刷新，等同不帶任何選項；不可與上面三個併用（伺服器回 400，CLI 會先在本機擋下來） |
+
+一次最多 100 筆（`--url` + `--prefix` + `--pattern` 合計），單筆最長 2048 字元，
+空字串會被拒絕。`--json` 一律輸出伺服器原始回應，例如
+`{"ok":true,"mode":"selective","total":5,"success":5,"removed":12}`：`total` 是
+正在服務該網域的線上節點數、`success` 是有回應的節點數、`removed`（只有選擇性
+刷新才有）是各節點刪除的快取筆數總和——同一個 URL 快取在 3 個節點就算 3 筆。
+
+速率限制：整站刷新同帳號 5 分鐘內最多 10 次；選擇性刷新 5 分鐘內最多 60 次，
+超過都會回傳 429 並提示稍後再試。
+
+`furcdn domain purge <id-or-name>`（session 版）選項與行為完全相同，回應另外帶
+`message` 字串。另外要記得：快取規則（TTL／不快取）只在節點回源時套用，改規則
+不會動到已經快取的內容，要讓規則變更立即生效得刷新對應的內容。
 
 ### `furcdn ssl upload <id-or-name> --cert <path> --key <path>`
 
@@ -196,7 +235,7 @@ body（欄位名稱已對照後端 `route.ts` 原始碼核對過），常用欄�
 | `furcdn config` | — | 本機設定（API key / API base URL） |
 | `furcdn health` | 無 | liveness 檢查 |
 | `furcdn api <method> <path>` | 自動判斷 | 逃生艙口：對任何 route 送請求，見下方「涵蓋範圍」 |
-| `furcdn domains` / `furcdn ssl` | API Key | v1 精簡版：list / purge / ssl upload |
+| `furcdn domains` / `furcdn ssl` | API Key | v1 精簡版：list / purge（整站，或 `--url`/`--prefix`/`--pattern` 選擇性刷新）/ ssl upload |
 | `furcdn info` | Session（`plans`/`origin-ips` 無需登入） | 叢集、公開方案、回源 IP 白名單、情報庫查詢、內建文檔 |
 | `furcdn domain` | Session | 完整版網域管理：CRUD（`update --cluster` 切換叢集）、`origin`（回源/SNI/Host override，主源站+備援，含源站擇優 `policy`/`probes`、`--pages` 指向 Pages）、`tls`（force-https/http2/ech 一覽與切換）、`ssl`（request/status/upload/delete）、`cache-rules`、`waf`（含 `ip-check`）、`dns-check`、`logs` |
 | `furcdn account` | Session | `balance`/`topup`/`redeem`/`discount-preview`、`change-password`/`change-email`/`settings`/`audit-log`、`notify`、`oauth`、`passkeys`（僅管理既有列表）、`api-keys`、`plan`（usage/history/auto-renew/buy/renew/upgrade）、`stats`、`alipay-verify`、`tickets` |
@@ -316,7 +355,7 @@ claude mcp add furcdn -- node /path/to/furcdn-cli/dist/index.js mcp
 | Tool 名稱 | 說明 | 參數 | 鑑權 |
 | --- | --- | --- | --- |
 | `furcdn_domains_list` | 列出帳號下所有網域 | 無 | API Key |
-| `furcdn_domains_purge` | 刷新指定網域快取 | `domain`（id 或網域名稱） | API Key |
+| `furcdn_domains_purge` | 刷新指定網域快取（整站，或只刷新符合的 URL／前綴／glob） | `domain`（id 或網域名稱）、`all?`、`urls?`、`prefixes?`、`patterns?` | API Key |
 | `furcdn_ssl_upload` | 上傳並啟用自訂 SSL 憑證 | `domain`、`cert`（PEM）、`key`（PEM） | API Key |
 | `furcdn_domains_create` | 建立新網域（完整版） | `domain`、`clusterId`、`origin?`、`originType?` | Session（需先 `furcdn login`） |
 | `furcdn_domains_update` | 更新網域簡單欄位 | `domain`、`fields`（key/value） | Session |

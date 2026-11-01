@@ -483,3 +483,126 @@ test("domain update --cluster 同叢集 no-op 顯示未變更", async () => {
   });
   assert.match(logs.join("\n"), /未變更/);
 });
+
+// domain purge：攔下送出的 body（完全沒送 body 時為 null）與輸出。
+async function capturePurge(
+  args: string[],
+  result: unknown = {
+    ok: true,
+    mode: "selective",
+    total: 3,
+    success: 3,
+    removed: 12,
+    message: "已刷新快取",
+  },
+): Promise<{ url: string; body: string | null; logs: string[] }> {
+  const originalFetch = globalThis.fetch;
+  let url = "";
+  let body: string | null = null;
+  globalThis.fetch = (async (u: string, init?: RequestInit) => {
+    url = u;
+    body = init?.body === undefined ? null : (init.body as string);
+    return fakeResponse(result);
+  }) as typeof fetch;
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (...a: unknown[]) => {
+    logs.push(a.map(String).join(" "));
+  };
+  try {
+    const program = buildDomainProgram((e: unknown): never => {
+      throw e;
+    });
+    await program.parseAsync(["node", "furcdn", "domain", "purge", ...args]);
+    return { url, body, logs };
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+  }
+}
+
+test("domain purge 不帶選項時不送 body（整站刷新，舊行為）", async () => {
+  const { url, body } = await capturePurge(["5"], {
+    ok: true,
+    mode: "all",
+    total: 3,
+    success: 3,
+    message: "已刷新快取",
+  });
+  assert.equal(body, null);
+  assert.match(url, /\/api\/domains\/5\/purge$/);
+});
+
+test("domain purge --all 送出 { all: true }", async () => {
+  const { body } = await capturePurge(["5", "--all"], {
+    ok: true,
+    mode: "all",
+    total: 3,
+    success: 3,
+    message: "已刷新快取",
+  });
+  assert.deepEqual(JSON.parse(body ?? "{}"), { all: true });
+});
+
+test("domain purge 把 --url/--prefix/--pattern 組成選擇性 body", async () => {
+  const { body, logs } = await capturePurge([
+    "5",
+    "--url",
+    "https://example.com/a.css?v=1",
+    "/b.js",
+    "--prefix",
+    "/static/",
+    "--pattern",
+    "/assets/*.js",
+  ]);
+  assert.deepEqual(JSON.parse(body ?? "{}"), {
+    urls: ["https://example.com/a.css?v=1", "/b.js"],
+    prefixes: ["/static/"],
+    patterns: ["/assets/*.js"],
+  });
+  const out = logs.join("\n");
+  assert.match(out, /已刷新快取/);
+  assert.match(out, /12 筆/);
+});
+
+test("domain purge 可重複帶同一個選項", async () => {
+  const { body } = await capturePurge(["5", "--url", "/a.css", "--url", "/b.css"]);
+  assert.deepEqual(JSON.parse(body ?? "{}"), { urls: ["/a.css", "/b.css"] });
+});
+
+test("domain purge --all 與 --url 併用時在本機就報錯，不打 API", async () => {
+  const originalFetch = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = (async () => {
+    called = true;
+    return fakeResponse({ ok: true });
+  }) as typeof fetch;
+  try {
+    const program = buildDomainProgram((e: unknown): never => {
+      throw e;
+    });
+    await assert.rejects(
+      () =>
+        program.parseAsync([
+          "node",
+          "furcdn",
+          "domain",
+          "purge",
+          "5",
+          "--all",
+          "--url",
+          "/a.css",
+        ]),
+      /不能與 urls/,
+    );
+    assert.equal(called, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("domain purge --json 輸出原始伺服器 JSON", async () => {
+  const payload = { ok: true, mode: "selective", total: 2, success: 2, removed: 4, message: "ok" };
+  const { logs } = await capturePurge(["5", "--url", "/a.css", "--json"], payload);
+  assert.deepEqual(JSON.parse(logs.join("\n")), payload);
+});

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import type { Command } from "commander";
+import { buildPurgeBody, type PurgeResult } from "../api.js";
 import { apiFetch, ApiError } from "../http.js";
 import { renderTable } from "../format.js";
 import { promptConfirm } from "../prompt.js";
@@ -362,22 +363,52 @@ export function registerDomainCommand(program: Command, fail: (e: unknown) => ne
 
   domain
     .command("purge <idOrName>")
-    .description("刷新網域快取（session 版，功能同 API Key 版的 domains purge）")
+    .description(
+      "刷新網域快取（session 版，功能同 API Key 版的 domains purge）；不帶選項＝整站刷新，可用 --url/--prefix/--pattern 只刷新符合的內容",
+    )
+    .option("--all", "整站刷新（等同不帶任何選項；不可與 --url/--prefix/--pattern 併用）")
+    .option("--url <url...>", "只刷新這些 URL（完整 URL 或 / 開頭路徑，可重複／多值）")
+    .option("--prefix <prefix...>", "只刷新路徑前綴符合的內容，例如 /static/")
+    .option("--pattern <glob...>", "只刷新路徑 glob 符合的內容，例如 '/assets/*.js'")
     .option("--json", "輸出 JSON")
-    .action(async (idOrName: string, opts: { json?: boolean }) => {
-      try {
-        const id = await resolveDomainId(idOrName);
-        const result = await apiFetch<{ ok: boolean; total: number; success: number; message: string }>(
-          "POST",
-          `/api/domains/${id}/purge`,
-          { auth: "session" },
-        );
-        if (opts.json) return console.log(JSON.stringify(result, null, 2));
-        console.log(result.message);
-      } catch (e) {
-        fail(e);
-      }
-    });
+    .action(
+      async (
+        idOrName: string,
+        opts: {
+          json?: boolean;
+          all?: boolean;
+          url?: string[];
+          prefix?: string[];
+          pattern?: string[];
+        },
+      ) => {
+        try {
+          const id = await resolveDomainId(idOrName);
+          const result = await apiFetch<PurgeResult>("POST", `/api/domains/${id}/purge`, {
+            auth: "session",
+            body: buildPurgeBody({
+              all: opts.all,
+              urls: opts.url,
+              prefixes: opts.prefix,
+              patterns: opts.pattern,
+            }),
+          });
+          if (opts.json) return console.log(JSON.stringify(result, null, 2));
+          const message =
+            result.message ??
+            (result.mode === "selective" ? "已選擇性刷新快取" : "已刷新快取");
+          if (result.mode === "selective") {
+            console.log(
+              `${message}（共刪除 ${result.removed ?? 0} 筆快取，${result.success}/${result.total} 個節點成功）`,
+            );
+            return;
+          }
+          console.log(message);
+        } catch (e) {
+          fail(e);
+        }
+      },
+    );
 
   domain
     .command("dns-check <idOrName>")

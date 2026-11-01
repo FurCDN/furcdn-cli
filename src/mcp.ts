@@ -114,7 +114,7 @@ const originTypeSchema = z.enum([
 export function createMcpServer(): McpServer {
   const server = new McpServer({
     name: "furcdn",
-    version: "0.4.0",
+    version: "0.5.0",
   });
 
   server.registerTool(
@@ -140,18 +140,43 @@ export function createMcpServer(): McpServer {
     {
       title: "刷新 FurCDN 網域快取",
       description:
-        "清除指定網域在所屬叢集所有節點上的 L1+L2 快取，等同 dashboard「立即刷新緩存」。有速率限制（5 分鐘 10 次）。",
+        "清除指定網域在所屬叢集所有節點上的 L1+L2 快取，等同 dashboard「立即刷新緩存」。不帶 urls/prefixes/patterns（或帶 all=true）＝整站刷新，速率限制為 5 分鐘 10 次；帶選擇條件時只刷新符合的內容，速率限制為 5 分鐘 60 次。",
       inputSchema: {
         domain: z
           .string()
           .min(1)
           .describe("網域的 id（數字字串）或完整網域名稱，例如 example.com"),
+        all: z
+          .boolean()
+          .optional()
+          .describe("整站刷新（等同不帶任何選擇條件；不可與 urls/prefixes/patterns 併用）"),
+        urls: z
+          .array(z.string().min(1).max(2048))
+          .max(100)
+          .optional()
+          .describe(
+            "只刷新這些 URL：完整 URL（host 需等於該網域）或 / 開頭路徑，例如 https://example.com/a.css?v=1、/b.js；query string 算在比對內（網域開啟 ignoreQueryString 時忽略），會一併清掉 Vary/GET/HEAD 各版本",
+          ),
+        prefixes: z
+          .array(z.string().min(1).max(2048))
+          .max(100)
+          .optional()
+          .describe(
+            "只刷新 URL 路徑前綴符合的內容（忽略 query string），例如 /static/ 會清掉 /static/a.js 與 /static/x/y.css",
+          ),
+        patterns: z
+          .array(z.string().min(1).max(2048))
+          .max(100)
+          .optional()
+          .describe(
+            "只刷新 URL 路徑 glob 符合的內容（忽略 query string，需以 / 開頭，* 可跨 /），例如 /assets/*.js、/img/*",
+          ),
       },
     },
-    async ({ domain }) => {
+    async ({ domain, all, urls, prefixes, patterns }) => {
       try {
         const d = await resolveDomainId(domain);
-        const r = await purgeDomain(d.id);
+        const r = await purgeDomain(d.id, { all, urls, prefixes, patterns });
         return jsonResult({ domain: d.name, ...r });
       } catch (e) {
         return toolError(e);

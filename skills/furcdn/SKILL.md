@@ -54,13 +54,55 @@ Accepts either the numeric id or the full domain name — prefer the domain
 name since it's what the user will typically say.
 
 ```bash
+# whole-domain purge (no options = the original behaviour)
 furcdn domains purge example.com
 furcdn domains purge 42 --json
+
+# selective purge: only the matching cache entries are dropped
+furcdn domains purge example.com --url 'https://example.com/a.css?v=1'
+furcdn domains purge example.com --url /b.js --url /c.js
+furcdn domains purge example.com --prefix /static/
+furcdn domains purge example.com --pattern '/assets/*.js'
+furcdn domains purge example.com --prefix /static/ --pattern '/img/*' --url /index.html
+furcdn domains purge example.com --all      # explicit whole-domain purge
 ```
 
-This is rate-limited (10 times per 5 minutes per account). If the command
-fails with a `429` error, tell the user to wait a few minutes before
-retrying — don't loop retrying it yourself.
+Selector semantics (use whichever matches what the user actually wants to
+drop — don't fall back to a whole-domain purge if a selector works):
+
+- `--url`: exact URL match. Either a full URL (host must equal the domain) or a
+  path starting with `/`. The query string is part of the match, unless the
+  domain has `ignoreQueryString` enabled. Every cached variant (Vary copies,
+  GET and HEAD) of that URL is dropped.
+- `--prefix`: plain string prefix on the URL path, query string ignored
+  (`/static/` drops `/static/a.js` and `/static/x/y.css`).
+- `--pattern`: glob on the URL path, must start with `/`, `*` matches anything
+  including `/` (e.g. `/assets/*.js`, `/img/*`). Quote it in the shell.
+- `--all`: explicit whole-domain purge; cannot be combined with the selectors
+  above (the CLI rejects it locally).
+- `--url`/`--prefix`/`--pattern` can be repeated or take several values, and
+  can be combined in one call (union). At most 100 entries in total, 2048
+  characters each.
+
+Rate limits: whole-domain purge 10 times per 5 minutes per account; selective
+purge 60 times per 5 minutes. If the command fails with a `429` error, tell
+the user to wait a few minutes before retrying — don't loop retrying it
+yourself.
+
+The output/`--json` response reports `mode` (`all` or `selective`), `total`
+(online nodes serving the domain), `success` (nodes that acknowledged) and,
+for selective purges, `removed` (cache entries deleted, summed across nodes —
+the same URL cached on 3 nodes counts 3).
+
+Cache rules (TTL / "do not cache") are only applied when a node fetches from
+origin, so changing a rule never touches content that is already cached. If
+the user expects a rule change to take effect immediately, purge the affected
+content. `furcdn domain purge` (session auth) takes the same options and also
+returns a `message` string.
+
+Over MCP the same operation is the `furcdn_domains_purge` tool: `domain` plus
+the optional `all`, `urls`, `prefixes` and `patterns` fields (string arrays,
+same semantics as the CLI flags).
 
 ### Upload a custom SSL certificate
 
