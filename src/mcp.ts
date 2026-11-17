@@ -490,7 +490,7 @@ export function createMcpServer(): McpServer {
     {
       title: "列出 FurCDN Pages 站點",
       description:
-        "列出目前帳號下的所有 Pages 靜態站點與用量（100MB 帳號額度、單站 20MB）。未解鎖內測時 unlocked=false、sites 為空。",
+        "列出目前帳號下的所有 Pages 靜態站點與用量（100MB 帳號額度、單站 40MB）。未解鎖內測時 unlocked=false、sites 為空。",
       inputSchema: {},
     },
     async () => {
@@ -532,7 +532,7 @@ export function createMcpServer(): McpServer {
     {
       title: "部署 FurCDN Pages 站點",
       description:
-        "把本機資料夾打包成 tar.gz 後部署到指定站點。根目錄必須有 index.html，會自動忽略 .git / node_modules / .DS_Store；部署前在本機檢查 20MB、2000 個檔案上限。",
+        "把本機資料夾打包成 tar.gz 後部署到指定站點。根目錄必須有 index.html，會自動忽略 .git / node_modules / .DS_Store；部署前在本機檢查 40MB、2000 個檔案上限。",
       inputSchema: {
         site: z.string().min(1).describe("目標站點 slug"),
         dir: z.string().min(1).describe("要部署的資料夾路徑（絕對或相對路徑）"),

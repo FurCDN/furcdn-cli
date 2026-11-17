@@ -212,7 +212,7 @@ CNAME；之後可用 `furcdn domain update <domain> --cluster <id>` 切換叢集
 到 Pages 站點，`--pages` 與 `--url` 互斥，`--backup` 可附加為備援。
 
 `deploy` 會在本機先把資料夾打包成 tar.gz，並做與伺服器一致的預檢：根目錄必須有
-`index.html`、解壓後總和 ≤ 20MB、檔案數 ≤ 2000、路徑 ≤ 255 字元；自動忽略
+`index.html`、解壓後總和 ≤ 40MB、檔案數 ≤ 2000、路徑 ≤ 255 字元；自動忽略
 `.git`、`node_modules`、`.DS_Store`，也不會跟隨指到資料夾外面的符號連結。
 Pages 流量以綁定的網域計算、併入套餐的每月流量，超過額度或沒有有效套餐時
 網域會顯示「服務已停用」。

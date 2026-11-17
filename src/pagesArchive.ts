@@ -7,12 +7,12 @@ import { formatBytes } from "./format.js";
 // 刻意不引入 tar 套件——伺服器端已經有 tar 解析器，這裡只需要寫出「一般檔案」
 // entry，實作範圍小且行為完全可預期（沒有隱藏目錄、沒有 PAX 擴充、沒有裝置檔）。
 // 規則對齊 docs/pages-design.md：
-//   - 解壓後總和 ≤ 20MB、檔案數 ≤ 2000、路徑 ≤ 255 字元、根目錄必須有 index.html
+//   - 解壓後總和 ≤ 40MB、檔案數 ≤ 2000、路徑 ≤ 255 字元、根目錄必須有 index.html
 //   - 忽略 .git / node_modules / .DS_Store
 //   - 不跟隨指到資料夾外面的符號連結（指到資料夾內的一般檔案則讀取內容後視為一般檔案）
 
 /** 單一 deployment 解壓後總大小上限（與 master 的 PAGES_SITE_MAX_BYTES 一致）。 */
-export const PAGES_SITE_MAX_BYTES = 20 * 1024 * 1024;
+export const PAGES_SITE_MAX_BYTES = 40 * 1024 * 1024;
 /** 單一 deployment 檔案數上限（與 master 的 PAGES_MAX_FILES 一致）。 */
 export const PAGES_MAX_FILES = 2000;
 /** 封存檔內路徑長度上限（字元）。 */
