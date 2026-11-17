@@ -114,7 +114,7 @@ const originTypeSchema = z.enum([
 export function createMcpServer(): McpServer {
   const server = new McpServer({
     name: "furcdn",
-    version: "0.5.0",
+    version: "0.5.1",
   });
 
   server.registerTool(

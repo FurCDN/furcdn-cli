@@ -199,7 +199,7 @@ furcdn domain origin set example.com --pages my-blog --backup
 ```
 
 - The folder root must contain `index.html`. The CLI packs a tar.gz and
-  enforces 20MB total / 2000 files / 255-char paths locally before uploading.
+  enforces 40MB total / 2000 files / 255-char paths locally before uploading.
   `.git`, `node_modules` and `.DS_Store` are ignored; symlinks pointing outside
   the folder are rejected.
 - Only the site's production branch goes live automatically; other branches are
@@ -227,7 +227,7 @@ furcdn domain origin set example.com --pages my-blog --backup
 - `403 pages_banned` / `pages_site_suspended` → the account or site was
   suspended; don't try to work around it, point the user to support/dashboard.
 - `413 pages_quota_exceeded` / `pages_site_too_large` → show `furcdn pages
-  usage` so the user can see the 100MB account quota / 20MB per-site limit.
+  usage` so the user can see the 100MB account quota / 40MB per-site limit.
 - `pages_domain_*` / existing domain error codes from `pages bind` → surface
   the server message as-is (domain already exists, plan domain limit, cluster
   not allowed, …); don't retry blindly.
